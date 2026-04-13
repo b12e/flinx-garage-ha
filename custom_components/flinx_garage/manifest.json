@@ -1,0 +1,23 @@
+{
+  "domain": "flinx_garage",
+  "name": "F-LINX Garage Door",
+  "codeowners": ["@b12e"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/b12e/flinx-garage-ha",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/b12e/flinx-garage-ha/issues",
+  "requirements": [
+    "bleak>=0.21.0",
+    "bleak-retry-connector>=3.0.0",
+    "aiohttp>=3.8.0",
+    "paho-mqtt>=2.1.0",
+    "pycryptodome>=3.19.0"
+  ],
+  "version": "2.0.0",
+  "bluetooth": [
+    {
+      "local_name": "Noru_*"
+    }
+  ]
+}

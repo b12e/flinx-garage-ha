@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "F-LINX Garage Door",
+        "description": "Enter your F-LINX cloud credentials. Real-time state is delivered via MQTT; commands are sent locally over Bluetooth.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "select_device": {
+        "title": "Select garage door",
+        "description": "Your account has multiple doors. Choose which one to add.",
+        "data": {
+          "device_code": "Device"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to F-LINX API",
+      "invalid_auth": "Invalid username or password",
+      "no_devices": "No devices found on this account",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "device_not_found": "Selected device not found"
+    }
+  }
+}
