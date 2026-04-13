@@ -1,12 +1,14 @@
 # F-LinX Garage Door
 
-Home Assistant (HACS) integration for F-LinX / Noru garage door controllers.
+Home Assistant (HACS) integration for F-LinX / Force-Door garage door controllers.
+
+This integration works with [this](https://www.myforcedoor.com/prodetails/49/546.html) USB dongle.
 
 ## Features
 
 - **Real-time state** via MQTT — door position, LED status, operation count
 - **Local commands** via Bluetooth — works without internet
-- **Remote commands** via cloud API — fallback when Bluetooth is out of range
+- **Remote commands** via cloud API — fallback when Bluetooth is not available
 - Garage door cover entity (open / close / stop)
 - LED light entity (on / off)
 - Operation count sensor
@@ -25,4 +27,4 @@ Commands are always sent via Bluetooth first. If BLE is unavailable, the integra
 
 - Home Assistant 2024.1.0+
 - Bluetooth adapter on your HA host (for local BLE commands)
-- F-LinX / Noru garage door controller connected to WiFi
+- [F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html) connected to WiFi
