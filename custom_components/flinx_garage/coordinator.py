@@ -286,10 +286,6 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     async def _send_cloud_command(self, control_ident: int) -> bool:
         """Send a command via the cloud HTTP gateway."""
         async with aiohttp.ClientSession() as session:
-            if not self._token and not await self._api_login(session):
-                _LOGGER.error("Cloud command failed: unable to authenticate")
-                return False
-
             url = f"{CLOUD_GATEWAY_URL}/device/control/{self._device_code}"
             params = {
                 "timestamp": int(time.time()),
@@ -301,31 +297,36 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 "Authorization": f"Bearer {self._token}",
                 "client-id": "f-linx",
             }
-            try:
-                async with session.get(url, params=params, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("code") == 200:
-                            _LOGGER.debug("Cloud command OK (controlIdent=%s)", control_ident)
-                            return True
-                        msg = data.get("msg", "unknown error")
-                        _LOGGER.warning("Cloud command rejected: %s", msg)
-                        # Re-auth on token expiry
-                        if "token" in msg.lower() or "auth" in msg.lower():
+            for attempt in range(2):
+                if not self._token and not await self._api_login(session):
+                    _LOGGER.error("Cloud command failed: unable to authenticate")
+                    return False
+                headers["Authorization"] = f"Bearer {self._token}"
+                try:
+                    async with session.get(url, params=params, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("code") == 200:
+                                _LOGGER.debug("Cloud command OK (controlIdent=%s)", control_ident)
+                                return True
+                            msg = data.get("msg", "unknown error")
+                            # Re-auth and retry on token/auth errors
+                            if "认证" in msg or "token" in msg.lower() or "auth" in msg.lower():
+                                _LOGGER.debug("Cloud token expired, re-authenticating")
+                                self._token = None
+                                continue
+                            _LOGGER.warning("Cloud command rejected: %s", msg)
+                            return False
+                        elif resp.status == 401:
                             self._token = None
-                        return False
-                    elif resp.status == 401:
-                        self._token = None
-                        _LOGGER.debug("Cloud command 401 — re-authenticating")
-                        if await self._api_login(session):
-                            return await self._send_cloud_command(control_ident)
-                        return False
-                    else:
-                        _LOGGER.warning("Cloud command HTTP %s", resp.status)
-                        return False
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("Cloud command error: %s", err)
-                return False
+                            continue
+                        else:
+                            _LOGGER.warning("Cloud command HTTP %s", resp.status)
+                            return False
+                except aiohttp.ClientError as err:
+                    _LOGGER.warning("Cloud command error: %s", err)
+                    return False
+            return False
 
     # -----------------------------------------------------------------
     # REST fallback (used when MQTT is disconnected or stale)
