@@ -150,7 +150,7 @@ class FlinxMqttClient:
 
     async def connect(self) -> None:
         """Connect and start the network loop in paho's internal thread."""
-        _LOGGER.info("Connecting to MQTT broker %s:%d", MQTT_BROKER, MQTT_PORT)
+        _LOGGER.debug("Connecting to MQTT broker %s:%d", MQTT_BROKER, MQTT_PORT)
         try:
             await self._loop.run_in_executor(
                 None, self._client.connect, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
@@ -162,7 +162,7 @@ class FlinxMqttClient:
 
     async def disconnect(self) -> None:
         """Disconnect and stop the network loop."""
-        _LOGGER.info("Disconnecting MQTT")
+        _LOGGER.debug("Disconnecting MQTT")
         try:
             self._client.loop_stop()
             self._client.disconnect()
@@ -181,7 +181,7 @@ class FlinxMqttClient:
         properties: Any = None,
     ) -> None:
         rc = int(reason_code.value) if hasattr(reason_code, "value") else int(reason_code)
-        _LOGGER.info("MQTT connected (rc=%d)", rc)
+        _LOGGER.debug("MQTT connected (rc=%d)", rc)
         if rc != 0:
             return
         self._connected = True
@@ -197,7 +197,7 @@ class FlinxMqttClient:
         reason_code: Any,
         properties: Any = None,
     ) -> None:
-        _LOGGER.warning("MQTT disconnected (rc=%s)", reason_code)
+        _LOGGER.debug("MQTT disconnected (rc=%s)", reason_code)
         self._connected = False
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:

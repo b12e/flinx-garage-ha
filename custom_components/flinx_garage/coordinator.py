@@ -159,7 +159,6 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     @callback
     def _ble_notification(self, sender: int, data: bytes) -> None:
-        _LOGGER.debug("BLE notification: %s", data.hex())
         self._last_notification = data
 
     async def _ensure_ble_connected(self) -> bool:
@@ -181,7 +180,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             ):
                 if service_info.name and service_info.name.startswith(BLE_NAME_PREFIX):
                     ble_device = service_info.device
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "Found BLE device %s (%s)",
                         service_info.name,
                         ble_device.address,
@@ -202,7 +201,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
 
             self.is_ble_connected = True
-            _LOGGER.info("BLE connected")
+            _LOGGER.debug("BLE connected")
             return True
 
         except BleakError as err:
@@ -212,7 +211,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self._ble_connecting = False
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
-        _LOGGER.warning("BLE disconnected")
+        _LOGGER.debug("BLE disconnected")
         self.is_ble_connected = False
         self._ble_client = None
 
@@ -266,7 +265,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         """Send a command via BLE first; fall back to cloud if BLE unavailable."""
         if await self._send_ble_command(ble_cmd_id):
             return True
-        _LOGGER.info("BLE unavailable, trying cloud command (controlIdent=%s)", cloud_control_ident)
+        _LOGGER.debug("BLE unavailable, falling back to cloud command")
         return await self._send_cloud_command(cloud_control_ident)
 
     # -----------------------------------------------------------------
@@ -296,7 +295,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("code") == 200:
-                            _LOGGER.info("Cloud command OK (controlIdent=%s)", control_ident)
+                            _LOGGER.debug("Cloud command OK (controlIdent=%s)", control_ident)
                             return True
                         msg = data.get("msg", "unknown error")
                         _LOGGER.warning("Cloud command rejected: %s", msg)
