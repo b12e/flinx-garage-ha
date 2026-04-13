@@ -197,6 +197,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 ble_device.name or "flinx",
                 disconnected_callback=self._on_ble_disconnect,
             )
+            # Ensure GATT services are resolved before subscribing
+            if not self._ble_client.services:
+                await self._ble_client.get_services()
             await self._ble_client.start_notify(BLE_NOTIFY_CHAR, self._ble_notification)
             await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
 
