@@ -208,7 +208,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return True
 
         except BleakError as err:
-            _LOGGER.warning("BLE connection failed: %s", err)
+            _LOGGER.debug("BLE connection failed: %s", err)
             return False
         finally:
             self._ble_connecting = False
@@ -219,13 +219,11 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._ble_client = None
 
     async def _send_ble_command(self, ble_cmd_id: int) -> bool:
+        """Send a command over BLE. Only attempts if already connected."""
+        if not self._ble_client or not self._ble_client.is_connected:
+            return False
         dev_key = bytes.fromhex(self._dev_key)
         async with self._command_lock:
-            if not await self._ensure_ble_connected():
-                _LOGGER.debug("BLE not available")
-                return False
-            if self._ble_client is None:
-                return False
             try:
                 auth_frame = build_ble_auth(dev_key)
                 cmd_frame = build_ble_command(ble_cmd_id, dev_key)
@@ -234,7 +232,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
                 return True
             except (BleakError, AttributeError) as err:
-                _LOGGER.warning("BLE command failed: %s", err)
+                _LOGGER.debug("BLE command failed: %s", err)
                 self.is_ble_connected = False
                 self._ble_client = None
                 return False
