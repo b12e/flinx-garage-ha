@@ -40,6 +40,8 @@ from .const import (
     CLOUD_CMD_STOP,
     CLOUD_GATEWAY_URL,
     DEFAULT_FALLBACK_SCAN_INTERVAL,
+    DOOR_STATE_CLOSED,
+    DOOR_STATE_OPEN,
     DOMAIN,
     MQTT_STALE_THRESHOLD,
 )
@@ -86,6 +88,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._ble_connecting = False
         self._command_lock = asyncio.Lock()
         self._last_notification: bytes | None = None
+        self._post_command_refresh: asyncio.Task[None] | None = None
 
         # State surface
         self.door_position: int | None = None      # 0–100
@@ -233,13 +236,17 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 return False
 
     async def async_door_open(self) -> bool:
-        return await self._send_command(BLE_CMD_OPEN, CLOUD_CMD_OPEN)
+        return await self._send_command(
+            BLE_CMD_OPEN, CLOUD_CMD_OPEN, target_position=DOOR_STATE_OPEN
+        )
 
     async def async_door_close(self) -> bool:
-        return await self._send_command(BLE_CMD_CLOSE, CLOUD_CMD_CLOSE)
+        return await self._send_command(
+            BLE_CMD_CLOSE, CLOUD_CMD_CLOSE, target_position=DOOR_STATE_CLOSED
+        )
 
     async def async_door_stop(self) -> bool:
-        return await self._send_command(BLE_CMD_STOP, CLOUD_CMD_STOP)
+        return await self._send_command(BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=None)
 
     async def async_led_on(self) -> bool:
         ok = await self._send_command(BLE_CMD_LED_ON, CLOUD_CMD_LED_ON)
@@ -256,13 +263,45 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         return ok
 
     async def _send_command(
-        self, ble_cmd_id: int, cloud_control_ident: int
+        self,
+        ble_cmd_id: int,
+        cloud_control_ident: int,
+        target_position: int | None = None,
     ) -> bool:
         """Send a command via BLE first; fall back to cloud if BLE unavailable."""
         if await self._send_ble_command(ble_cmd_id):
+            self._schedule_post_command_refresh(target_position)
             return True
         _LOGGER.debug("BLE unavailable, falling back to cloud command")
-        return await self._send_cloud_command(cloud_control_ident)
+        ok = await self._send_cloud_command(cloud_control_ident)
+        if ok:
+            self._schedule_post_command_refresh(target_position)
+        return ok
+
+    @callback
+    def _schedule_post_command_refresh(self, target_position: int | None) -> None:
+        if self._post_command_refresh is not None:
+            self._post_command_refresh.cancel()
+        self._post_command_refresh = self.hass.async_create_task(
+            self._async_post_command_refresh(target_position)
+        )
+
+    async def _async_post_command_refresh(self, target_position: int | None) -> None:
+        """Poll the cloud API briefly after a command to converge state quickly."""
+        try:
+            for _ in range(10):
+                await asyncio.sleep(2)
+                info = await self._async_fetch_device_info()
+                if info is None:
+                    continue
+                self._apply_device_info(info, push_update=True)
+                if target_position is None or self.door_position == target_position:
+                    return
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if asyncio.current_task() is self._post_command_refresh:
+                self._post_command_refresh = None
 
     # -----------------------------------------------------------------
     # Cloud command path
@@ -361,6 +400,41 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("API get device info error: %s", err)
             return None
 
+    def _apply_device_info(self, info: dict[str, Any], push_update: bool) -> None:
+        changed = False
+
+        for attr in info.get("attributes", []):
+            code = attr.get("attributeCode")
+            value = attr.get("attributeValue")
+            if code == ATTR_DOOR_POSITION and value != self.door_position:
+                self.door_position = value
+                changed = True
+            elif code == ATTR_OPERATED_CYCLES and value != self.operated_cycles:
+                self.operated_cycles = value
+                changed = True
+            elif code == ATTR_LED_ACTUAL:
+                new_led_state = value == 0xF0
+                if new_led_state != self.led_state:
+                    self.led_state = new_led_state
+                    changed = True
+
+        firmware_version = info.get("firmwareVersion")
+        if firmware_version != self.firmware_version:
+            self.firmware_version = firmware_version
+            changed = True
+
+        is_online = info.get("onlineState") == 1
+        if is_online != self.is_online:
+            self.is_online = is_online
+            changed = True
+
+        if changed and push_update:
+            self.async_set_updated_data(self._build_state())
+
+    async def _async_fetch_device_info(self) -> dict[str, Any] | None:
+        async with aiohttp.ClientSession() as session:
+            return await self._api_get_device_info(session)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Periodic tick: mostly a fallback when MQTT is stale."""
         # Opportunistically (re)establish BLE — doesn't fail the update if it can't.
@@ -379,27 +453,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
         # MQTT is down/stale. Poll the REST API to keep state current.
         _LOGGER.debug("MQTT stale — polling REST API for state")
-        async with aiohttp.ClientSession() as session:
-            info = await self._api_get_device_info(session)
+        info = await self._async_fetch_device_info()
 
         if info is None:
             # Don't flap entities if we just can't reach the API —
             # UpdateFailed will mark them unavailable after several failures.
             raise UpdateFailed("MQTT and API both unreachable")
 
-        for attr in info.get("attributes", []):
-            code = attr.get("attributeCode")
-            value = attr.get("attributeValue")
-            if code == ATTR_DOOR_POSITION:
-                self.door_position = value
-            elif code == ATTR_OPERATED_CYCLES:
-                self.operated_cycles = value
-            elif code == ATTR_LED_ACTUAL:
-                # 0xf0 = on, 0xf1 = off (only update if not already set by command)
-                if self.led_state is None:
-                    self.led_state = value == 0xF0
-        self.firmware_version = info.get("firmwareVersion")
-        self.is_online = info.get("onlineState") == 1
+        self._apply_device_info(info, push_update=False)
 
         return self._build_state()
 
@@ -427,6 +488,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Disconnect MQTT and BLE cleanly."""
+        if self._post_command_refresh is not None:
+            self._post_command_refresh.cancel()
         await self.mqtt.disconnect()
         if self._ble_client and self._ble_client.is_connected:
             try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -62,6 +63,34 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         self._last_position: int | None = None
         self._last_position_ts: float = 0.0
         self._direction: int = 0  # -1 closing, 0 idle, +1 opening
+        self._direction_reset: asyncio.TimerHandle | None = None
+
+    @callback
+    def _cancel_direction_reset(self) -> None:
+        if self._direction_reset is not None:
+            self._direction_reset.cancel()
+            self._direction_reset = None
+
+    @callback
+    def _clear_stale_direction(self) -> None:
+        self._direction_reset = None
+        if self._direction == 0:
+            return
+
+        _LOGGER.debug(
+            "Clearing stale cover direction after %.1fs without movement",
+            MOVING_WINDOW_SEC,
+        )
+        self._direction = 0
+        self.async_write_ha_state()
+
+    @callback
+    def _schedule_direction_reset(self) -> None:
+        self._cancel_direction_reset()
+        if self.hass is not None:
+            self._direction_reset = self.hass.loop.call_later(
+                MOVING_WINDOW_SEC, self._clear_stale_direction
+            )
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -89,7 +118,16 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
             elif self._direction == -1 and pos == 0:
                 self._direction = 0
 
+        if self._direction != 0:
+            self._schedule_direction_reset()
+        else:
+            self._cancel_direction_reset()
+
         super()._handle_coordinator_update()
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._cancel_direction_reset()
+        await super().async_will_remove_from_hass()
 
     @property
     def current_cover_position(self) -> int | None:
@@ -121,10 +159,21 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         }
 
     async def async_open_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.async_door_open()
+        if await self.coordinator.async_door_open():
+            self._direction = 1
+            self._last_position_ts = time.monotonic()
+            self._schedule_direction_reset()
+            self.async_write_ha_state()
 
     async def async_close_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.async_door_close()
+        if await self.coordinator.async_door_close():
+            self._direction = -1
+            self._last_position_ts = time.monotonic()
+            self._schedule_direction_reset()
+            self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.async_door_stop()
+        if await self.coordinator.async_door_stop():
+            self._direction = 0
+            self._cancel_direction_reset()
+            self.async_write_ha_state()
