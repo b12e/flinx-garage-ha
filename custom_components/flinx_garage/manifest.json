@@ -14,7 +14,7 @@
     "paho-mqtt>=2.1.0",
     "pycryptodome>=3.19.0"
   ],
-  "version": "2.1.6",
+  "version": "2.1.7",
   "bluetooth": [
     {
       "local_name": "Noru_*"
