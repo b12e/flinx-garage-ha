@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from homeassistant.components.cover import (
+    ATTR_POSITION,
     CoverDeviceClass,
     CoverEntity,
     CoverEntityFeature,
@@ -42,7 +43,10 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
 
     _attr_device_class = CoverDeviceClass.GARAGE
     _attr_supported_features = (
-        CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE | CoverEntityFeature.STOP
+        CoverEntityFeature.OPEN
+        | CoverEntityFeature.CLOSE
+        | CoverEntityFeature.STOP
+        | CoverEntityFeature.SET_POSITION
     )
     _attr_has_entity_name = True
     _attr_name = "Garage Door"
@@ -177,3 +181,15 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
             self._direction = 0
             self._cancel_direction_reset()
             self.async_write_ha_state()
+
+    async def async_set_cover_position(self, **kwargs: Any) -> None:
+        position = kwargs[ATTR_POSITION]
+        current = self.coordinator.door_position
+        # Optimistic direction for snappy UI; coordinator position deltas
+        # refine it as the door moves.
+        if current is not None and position != current:
+            self._direction = 1 if position > current else -1
+            self._last_position_ts = time.monotonic()
+            self._schedule_direction_reset()
+            self.async_write_ha_state()
+        await self.coordinator.async_door_set_position(position)

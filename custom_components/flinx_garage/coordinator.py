@@ -46,6 +46,10 @@ from .const import (
     DOOR_STATE_OPEN,
     DOMAIN,
     MQTT_STALE_THRESHOLD,
+    POSITION_LEAD_TIME,
+    POSITION_POLL,
+    POSITION_TIMEOUT,
+    POSITION_TOLERANCE,
 )
 from .crypto import (
     BLE_CMD_CLOSE,
@@ -91,6 +95,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._command_lock = asyncio.Lock()
         self._last_notification: bytes | None = None
         self._post_command_refresh: asyncio.Task[None] | None = None
+        self._position_task: asyncio.Task[None] | None = None
 
         # State surface
         self.door_position: int | None = None      # 0–100
@@ -340,17 +345,115 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         return False
 
     async def async_door_open(self) -> bool:
+        self._cancel_position_task()
         return await self._send_command(
             BLE_CMD_OPEN, CLOUD_CMD_OPEN, target_position=DOOR_STATE_OPEN
         )
 
     async def async_door_close(self) -> bool:
+        self._cancel_position_task()
         return await self._send_command(
             BLE_CMD_CLOSE, CLOUD_CMD_CLOSE, target_position=DOOR_STATE_CLOSED
         )
 
     async def async_door_stop(self) -> bool:
+        self._cancel_position_task()
         return await self._send_command(BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=None)
+
+    async def async_door_set_position(self, position: int) -> bool:
+        """Drive the door to a target open percentage (0=closed, 100=open).
+
+        The hardware has no native arbitrary-position command, so we send a
+        normal open/close (BLE-first, cloud fallback) and STOP once the live
+        position reaches the target. Endpoints (0/100) use the dedicated
+        open/close commands which drive to the hard limit.
+        """
+        target = max(DOOR_STATE_CLOSED, min(DOOR_STATE_OPEN, position))
+        if target >= DOOR_STATE_OPEN:
+            return await self.async_door_open()
+        if target <= DOOR_STATE_CLOSED:
+            return await self.async_door_close()
+
+        current = self.door_position
+        if current is None:
+            _LOGGER.warning("Cannot set position: current door position unknown")
+            return False
+        if abs(current - target) <= POSITION_TOLERANCE:
+            _LOGGER.debug("Set position: already at ~%s%% (target %s)", current, target)
+            return True
+
+        # Supersede any in-flight positioning, then drive to the new target.
+        self._cancel_position_task()
+        self._position_task = self.hass.async_create_task(
+            self._run_to_position(target, current)
+        )
+        return True
+
+    async def _run_to_position(self, target: int, start: int) -> None:
+        """Open/close toward target and STOP when live position reaches it."""
+        opening = target > start
+        try:
+            ok = await self._send_command(
+                BLE_CMD_OPEN if opening else BLE_CMD_CLOSE,
+                CLOUD_CMD_OPEN if opening else CLOUD_CMD_CLOSE,
+                target_position=None,
+            )
+            if not ok:
+                _LOGGER.warning("Set position: failed to start movement toward %s%%", target)
+                return
+
+            # Predictive stop: the door coasts after STOP, so estimate its speed
+            # from the live position stream and stop once the *projected* landing
+            # spot (pos + speed x POSITION_LEAD_TIME) reaches the target.
+            last_pos = start
+            last_t = self.hass.loop.time()
+            speed = 0.0  # %/s magnitude; smoothed
+            deadline = last_t + POSITION_TIMEOUT
+            while self.hass.loop.time() < deadline:
+                await asyncio.sleep(POSITION_POLL)
+                pos = self.door_position
+                now = self.hass.loop.time()
+                if pos is None:
+                    continue
+                if pos != last_pos:
+                    dt = now - last_t
+                    if dt > 0:
+                        inst = abs(pos - last_pos) / dt
+                        # EMA-smooth; seed on the first observed movement.
+                        speed = inst if speed == 0 else 0.6 * speed + 0.4 * inst
+                    last_pos = pos
+                    last_t = now
+                lead = speed * POSITION_LEAD_TIME
+                projected = pos + lead if opening else pos - lead
+                if (opening and projected >= target) or (
+                    not opening and projected <= target
+                ):
+                    break
+            else:
+                _LOGGER.warning("Set position: timed out before reaching %s%%", target)
+
+            await self._send_command(
+                BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=target
+            )
+            landing = last_pos + (speed * POSITION_LEAD_TIME if opening else -speed * POSITION_LEAD_TIME)
+            _LOGGER.debug(
+                "Set position: target %s%%, stop issued at pos=%s speed=%.1f%%/s "
+                "(projected ~%s%%, lead %.1fs)",
+                target, last_pos, speed, round(landing), POSITION_LEAD_TIME,
+            )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if asyncio.current_task() is self._position_task:
+                self._position_task = None
+
+    @callback
+    def _cancel_position_task(self) -> None:
+        """Cancel an in-flight positioning loop (but never cancel ourselves)."""
+        task = self._position_task
+        self._position_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
 
     async def async_led_on(self) -> bool:
         ok = await self._send_command(BLE_CMD_LED_ON, CLOUD_CMD_LED_ON)
@@ -595,6 +698,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         """Disconnect MQTT and BLE cleanly."""
         if self._post_command_refresh is not None:
             self._post_command_refresh.cancel()
+        self._cancel_position_task()
         await self.mqtt.disconnect()
         if self._ble_client and self._ble_client.is_connected:
             try:
