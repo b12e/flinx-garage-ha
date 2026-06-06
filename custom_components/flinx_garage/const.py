@@ -63,9 +63,13 @@ DOOR_STATE_OPEN = 100
 
 # Software positioning (set_cover_position): the door has no native arbitrary-%
 # command, so we drive open/close and STOP when live position reaches target.
-POSITION_TOLERANCE = 3   # %, stop this far before target to absorb stop latency
+POSITION_TOLERANCE = 3   # %, "already there" deadband for set_position requests
 POSITION_TIMEOUT = 30    # s, give up driving to a position after this long
 POSITION_POLL = 0.25     # s, how often to check live position while moving
+# The door coasts after STOP (command latency + MQTT update granularity + motor
+# momentum). We lead the stop by speed x this many seconds so it lands on target
+# instead of overshooting. Tune up if it still overshoots, down if it undershoots.
+POSITION_LEAD_TIME = 1.3  # s
 
 # Config entry keys
 CONF_USERNAME = "username"

@@ -46,6 +46,7 @@ from .const import (
     DOOR_STATE_OPEN,
     DOMAIN,
     MQTT_STALE_THRESHOLD,
+    POSITION_LEAD_TIME,
     POSITION_POLL,
     POSITION_TIMEOUT,
     POSITION_TOLERANCE,
@@ -401,15 +402,31 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("Set position: failed to start movement toward %s%%", target)
                 return
 
-            deadline = self.hass.loop.time() + POSITION_TIMEOUT
+            # Predictive stop: the door coasts after STOP, so estimate its speed
+            # from the live position stream and stop once the *projected* landing
+            # spot (pos + speed x POSITION_LEAD_TIME) reaches the target.
+            last_pos = start
+            last_t = self.hass.loop.time()
+            speed = 0.0  # %/s magnitude; smoothed
+            deadline = last_t + POSITION_TIMEOUT
             while self.hass.loop.time() < deadline:
                 await asyncio.sleep(POSITION_POLL)
                 pos = self.door_position
+                now = self.hass.loop.time()
                 if pos is None:
                     continue
-                # Stop a touch early (tolerance) to absorb command/stop latency.
-                if (opening and pos >= target - POSITION_TOLERANCE) or (
-                    not opening and pos <= target + POSITION_TOLERANCE
+                if pos != last_pos:
+                    dt = now - last_t
+                    if dt > 0:
+                        inst = abs(pos - last_pos) / dt
+                        # EMA-smooth; seed on the first observed movement.
+                        speed = inst if speed == 0 else 0.6 * speed + 0.4 * inst
+                    last_pos = pos
+                    last_t = now
+                lead = speed * POSITION_LEAD_TIME
+                projected = pos + lead if opening else pos - lead
+                if (opening and projected >= target) or (
+                    not opening and projected <= target
                 ):
                     break
             else:
@@ -418,8 +435,11 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             await self._send_command(
                 BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=target
             )
+            landing = last_pos + (speed * POSITION_LEAD_TIME if opening else -speed * POSITION_LEAD_TIME)
             _LOGGER.debug(
-                "Set position: target %s%%, stopped at ~%s%%", target, self.door_position
+                "Set position: target %s%%, stop issued at pos=%s speed=%.1f%%/s "
+                "(projected ~%s%%, lead %.1fs)",
+                target, last_pos, speed, round(landing), POSITION_LEAD_TIME,
             )
         except asyncio.CancelledError:
             raise
