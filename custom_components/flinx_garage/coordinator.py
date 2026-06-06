@@ -30,6 +30,7 @@ from .const import (
     ATTR_LED_ACTUAL,
     ATTR_OPERATED_CYCLES,
     BLE_ACK_TIMEOUT,
+    BLE_CONNECT_TIMEOUT,
     BLE_NAME_PREFIX,
     BLE_NOTIFY_CHAR,
     BLE_NOTIFY_CHAR2,
@@ -171,42 +172,96 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return True
 
         if self._ble_connecting:
+            _LOGGER.debug("BLE: connect already in progress, skipping")
             return False
 
         self._ble_connecting = True
         try:
-            ble_device = None
-            for service_info in bluetooth.async_discovered_service_info(
-                self.hass, connectable=True
-            ):
-                if service_info.name and service_info.name.startswith(BLE_NAME_PREFIX):
-                    ble_device = service_info.device
-                    break
-
+            ble_device = self._find_ble_device()
             if ble_device is None:
                 return False
 
-            self._ble_client = await establish_connection(
-                BleakClient,
-                ble_device,
-                ble_device.name or "flinx",
-                disconnected_callback=self._on_ble_disconnect,
-                max_attempts=2,
+            _LOGGER.debug(
+                "BLE: connecting to %s (%s)", ble_device.name, ble_device.address
             )
-            if not self._ble_client.services:
-                await self._ble_client.get_services()
-            await self._ble_client.start_notify(BLE_NOTIFY_CHAR, self._ble_notification)
-            await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
+            # Wrap the whole connect + service-discovery + notify setup in a
+            # timeout. A BLE-proxy link can establish at the radio level but
+            # stall during service discovery/notify subscription, which would
+            # otherwise leave us awaiting forever (and _ble_connecting stuck).
+            async with asyncio.timeout(BLE_CONNECT_TIMEOUT):
+                self._ble_client = await establish_connection(
+                    BleakClient,
+                    ble_device,
+                    ble_device.name or "flinx",
+                    disconnected_callback=self._on_ble_disconnect,
+                    max_attempts=2,
+                )
+                if not self._ble_client.services:
+                    await self._ble_client.get_services()
+                await self._ble_client.start_notify(BLE_NOTIFY_CHAR, self._ble_notification)
+                await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
 
             self.is_ble_connected = True
             _LOGGER.debug("BLE connected to %s", ble_device.address)
             return True
 
+        except TimeoutError:
+            _LOGGER.debug("BLE: connect timed out after %ss", BLE_CONNECT_TIMEOUT)
+            await self._teardown_ble_client()
+            return False
         except (BleakError, Exception) as err:  # noqa: BLE001
             _LOGGER.debug("BLE connection failed: %s", err)
+            await self._teardown_ble_client()
             return False
         finally:
             self._ble_connecting = False
+
+    def _find_ble_device(self):
+        """Find the Noru_* device among discovered BLE advertisements.
+
+        Logs why no connection is attempted so we can distinguish "device not
+        seen at all", "seen but not connectable" (a passive-only proxy), and
+        "seen and connectable".
+        """
+        connectable = list(
+            bluetooth.async_discovered_service_info(self.hass, connectable=True)
+        )
+        for si in connectable:
+            if si.name and si.name.startswith(BLE_NAME_PREFIX):
+                _LOGGER.debug(
+                    "BLE: found connectable %s (%s) rssi=%s via %s",
+                    si.name, si.address, si.rssi, si.source,
+                )
+                return si.device
+
+        all_si = list(
+            bluetooth.async_discovered_service_info(self.hass, connectable=False)
+        )
+        matches = [s for s in all_si if s.name and s.name.startswith(BLE_NAME_PREFIX)]
+        if matches:
+            _LOGGER.warning(
+                "BLE: %s* seen but not connectable (proxy may be passive-only): %s",
+                BLE_NAME_PREFIX,
+                ", ".join(
+                    f"{s.name}/{s.address} rssi={s.rssi} src={s.source}" for s in matches
+                ),
+            )
+        else:
+            _LOGGER.debug(
+                "BLE: no %s* device discovered (%d connectable, %d total adverts)",
+                BLE_NAME_PREFIX, len(connectable), len(all_si),
+            )
+        return None
+
+    async def _teardown_ble_client(self) -> None:
+        """Drop a half-open client so the proxy connection slot is freed."""
+        client, self._ble_client = self._ble_client, None
+        self.is_ble_connected = False
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                pass
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
         _LOGGER.debug("BLE disconnected — will reconnect in 10s")
