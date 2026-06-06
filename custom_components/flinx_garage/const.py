@@ -33,6 +33,11 @@ BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
 # without an ack within this window we treat BLE as failed and fall back to cloud.
 BLE_ACK_TIMEOUT = 1.5  # seconds
 
+# Upper bound on a full BLE connect (link + service discovery + notify setup).
+# A proxy link can establish but then stall during discovery; the timeout stops
+# that from wedging _ble_connecting and frees the connection slot.
+BLE_CONNECT_TIMEOUT = 30  # seconds
+
 # BLE command generation is in crypto.py — commands are built dynamically from
 # the per-device devKey using AES-128-ECB encryption. No hardcoded blobs needed.
 
