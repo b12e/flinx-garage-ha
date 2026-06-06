@@ -30,19 +30,31 @@ BLE_CMD_LED_OFF = 0x06
 
 
 def build_ble_command(cmd_id: int, dev_key: bytes) -> bytes:
-    """Build an encrypted BLE command frame for a given command."""
-    plaintext = bytes([0x03, 0x06, cmd_id, 0x00, 0x05, 0x10, cmd_id])
+    """Build an encrypted BLE command frame for a given command.
+
+    Mirrors the app's ``buildData(positional=[0,5], data=[0x10,cmd], sep=2*cmd)``:
+    plaintext = ``03 06 <sep> 00 05 10 <cmd>`` where ``sep`` is ``2 * cmd``
+    (open 1→2, close 2→4, stop 3→6, LED-on 5→10, LED-off 6→12). The earlier
+    implementation put ``cmd`` in the ``sep`` slot, which the device rejected.
+    """
+    sep = (cmd_id * 2) & 0xFF
+    plaintext = bytes([0x03, 0x06, sep, 0x00, 0x05, 0x10, cmd_id])
     return _ble_frame(plaintext, dev_key)
 
 
 def build_ble_auth(dev_key: bytes) -> bytes:
-    """Build an encrypted BLE auth command with current timestamp."""
+    """Build the BLE auth frame (sent once per connection).
+
+    Mirrors the app's ``getAuthNew`` → ``buildData(positional=[0x0e,0x03],
+    auth=true, sep=7)``: plaintext = ``03 06 07 0E 03`` + timestamp (4-byte BE
+    epoch seconds) + ``MD5(devKey)`` (16 bytes). There is no separator byte
+    between the timestamp and the MD5 (the previous ``0x0B`` was spurious).
+    """
     ts = int(time.time())
     md5 = hashlib.md5(dev_key).digest()
     plaintext = (
         bytes([0x03, 0x06, 0x07, 0x0E, 0x03])
         + struct.pack(">I", ts)
-        + bytes([0x0B])
         + md5
     )
     return _ble_frame(plaintext, dev_key)

@@ -201,8 +201,22 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 await self._ble_client.start_notify(BLE_NOTIFY_CHAR, self._ble_notification)
                 await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
 
+                # Authenticate once per connection. The device validates this
+                # frame before it will accept any command; the app sends it
+                # once after service discovery (with a short settle delay).
+                await asyncio.sleep(0.8)
+                self._last_notification = None
+                await self._ble_client.write_gatt_char(
+                    BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
+                )
+                await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
+
             self.is_ble_connected = True
-            _LOGGER.debug("BLE connected to %s", ble_device.address)
+            _LOGGER.debug(
+                "BLE connected and authenticated to %s (auth resp: %s)",
+                ble_device.address,
+                self._last_notification.hex() if self._last_notification else "none",
+            )
             return True
 
         except TimeoutError:
@@ -297,12 +311,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         async with self._command_lock:
             try:
                 # Clear any stale notification before writing so the ack wait
-                # only sees a response triggered by this command.
+                # only sees a response triggered by this command. Auth was sent
+                # once at connect time, so we only write the command frame here.
                 self._last_notification = None
-                auth_frame = build_ble_auth(dev_key)
                 cmd_frame = build_ble_command(ble_cmd_id, dev_key)
-                await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, auth_frame)
-                await asyncio.sleep(0.05)
                 await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
             except (BleakError, AttributeError) as err:
                 _LOGGER.debug("BLE command failed: %s", err)
