@@ -29,6 +29,7 @@ from .const import (
     ATTR_DOOR_POSITION,
     ATTR_LED_ACTUAL,
     ATTR_OPERATED_CYCLES,
+    BLE_ACK_TIMEOUT,
     BLE_NAME_PREFIX,
     BLE_NOTIFY_CHAR,
     BLE_NOTIFY_CHAR2,
@@ -217,23 +218,48 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         ))
 
     async def _send_ble_command(self, ble_cmd_id: int) -> bool:
-        """Send a command over BLE if already connected."""
+        """Send a command over BLE if already connected.
+
+        Returns True only if the door acknowledges with a notification — a
+        successful GATT write alone does not mean the device accepted the frame
+        (the auth/command format is reverse-engineered). Without an ack we
+        return False so the caller falls back to the cloud command.
+        """
         if not self._ble_client or not self._ble_client.is_connected:
             return False
         dev_key = bytes.fromhex(self._dev_key)
         async with self._command_lock:
             try:
+                # Clear any stale notification before writing so the ack wait
+                # only sees a response triggered by this command.
+                self._last_notification = None
                 auth_frame = build_ble_auth(dev_key)
                 cmd_frame = build_ble_command(ble_cmd_id, dev_key)
                 await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, auth_frame)
                 await asyncio.sleep(0.05)
                 await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
-                return True
             except (BleakError, AttributeError) as err:
                 _LOGGER.debug("BLE command failed: %s", err)
                 self.is_ble_connected = False
                 self._ble_client = None
                 return False
+
+        # Wait (outside the write lock) for an acknowledgement notification.
+        acked = await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
+        if acked:
+            _LOGGER.debug("BLE command acked: %s", self._last_notification.hex())
+            return True
+        _LOGGER.debug("BLE command sent but no ack within %ss", BLE_ACK_TIMEOUT)
+        return False
+
+    async def _wait_for_ble_ack(self, timeout: float) -> bool:
+        """Poll for a notification arriving after the command write."""
+        deadline = self.hass.loop.time() + timeout
+        while self.hass.loop.time() < deadline:
+            if self._last_notification is not None:
+                return True
+            await asyncio.sleep(0.05)
+        return False
 
     async def async_door_open(self) -> bool:
         return await self._send_command(
@@ -270,9 +296,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     ) -> bool:
         """Send a command via BLE first; fall back to cloud if BLE unavailable."""
         if await self._send_ble_command(ble_cmd_id):
+            _LOGGER.debug("BLE command confirmed (ack)")
             self._schedule_post_command_refresh(target_position)
             return True
-        _LOGGER.debug("BLE unavailable, falling back to cloud command")
+        _LOGGER.debug("BLE unavailable/unconfirmed, falling back to cloud command")
         ok = await self._send_cloud_command(cloud_control_ident)
         if ok:
             self._schedule_post_command_refresh(target_position)
