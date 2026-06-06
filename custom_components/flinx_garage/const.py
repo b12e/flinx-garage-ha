@@ -28,6 +28,11 @@ BLE_WRITE_CHAR = "02362a10-cf3a-11e1-efdc-000215d5c51b"
 BLE_NOTIFY_CHAR = "02362a11-cf3a-11e1-efdc-000215d5c51b"
 BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
 
+# How long to wait for a device notification acknowledging a BLE command.
+# A bare GATT write succeeding does not mean the door accepted the frame, so
+# without an ack within this window we treat BLE as failed and fall back to cloud.
+BLE_ACK_TIMEOUT = 1.5  # seconds
+
 # BLE command generation is in crypto.py — commands are built dynamically from
 # the per-device devKey using AES-128-ECB encryption. No hardcoded blobs needed.
 

@@ -41,7 +41,12 @@ AttrCallback = Callable[[dict[int, Any]], Awaitable[None] | None]
 def parse_attr_up(data: bytes) -> dict[int, Any] | None:
     """Parse a decrypted attr/up plaintext into an attribute dict.
 
-    Plaintext layout: 03 00 [seq:1] [ts:4] [motor:2] 02 02 [TLV ...] [adler32:4]
+    Plaintext layout: 03 TT [seq:1] [ts:4] [motor:2] 02 02 [TLV ...] [adler32:4]
+
+    Byte 0 is always 0x03; byte 1 (TT) is a message-type/flags byte that has
+    been observed as 0x00, 0x04 and 0x1f for the same attr report shape — so we
+    key off byte 0 plus the 02 02 TLV marker at offset 9 rather than a fixed
+    two-byte prefix.
 
     TLV entries: 2-byte attribute code (big-endian, 0x27XX) followed by
     a variable-length value (1 byte by default; 2 or 8 for known codes).
@@ -49,8 +54,11 @@ def parse_attr_up(data: bytes) -> dict[int, Any] | None:
     Returns a dict mapping attributeCode (int) → value, or None if the
     message doesn't look like an attr/up report.
     """
-    if len(data) < 15 or data[0:2] != b"\x03\x00":
+    if len(data) < 15 or data[0] != 0x03 or data[9:11] != b"\x02\x02":
         return None
+
+    if data[1] != 0x00:
+        _LOGGER.debug("MQTT attr/up message-type byte = 0x%02x", data[1])
 
     result: dict[int, Any] = {
         "_seq": data[2],
