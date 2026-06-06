@@ -281,6 +281,17 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         return False so the caller falls back to the cloud command.
         """
         if not self._ble_client or not self._ble_client.is_connected:
+            # Not connected yet: kick off a connect in the background (so the
+            # next command can use BLE) but don't block this one — fall back to
+            # cloud immediately. Logs the connect lifecycle on button press.
+            _LOGGER.debug(
+                "BLE not connected (client=%s, connecting=%s); triggering connect, "
+                "using cloud for this command",
+                self._ble_client is not None,
+                self._ble_connecting,
+            )
+            if not self._ble_connecting:
+                self.hass.async_create_task(self._ensure_ble_connected())
             return False
         dev_key = bytes.fromhex(self._dev_key)
         async with self._command_lock:
