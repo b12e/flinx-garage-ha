@@ -61,6 +61,12 @@ ATTR_SIZE_8B = {ATTR_DEVICE_ID}
 DOOR_STATE_CLOSED = 0
 DOOR_STATE_OPEN = 100
 
+# Software positioning (set_cover_position): the door has no native arbitrary-%
+# command, so we drive open/close and STOP when live position reaches target.
+POSITION_TOLERANCE = 3   # %, stop this far before target to absorb stop latency
+POSITION_TIMEOUT = 30    # s, give up driving to a position after this long
+POSITION_POLL = 0.25     # s, how often to check live position while moving
+
 # Config entry keys
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
