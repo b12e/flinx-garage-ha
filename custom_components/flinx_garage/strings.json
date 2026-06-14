@@ -27,5 +27,22 @@
       "already_configured": "Device is already configured",
       "device_not_found": "Selected device not found"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "F-LINX Garage Door options",
+        "description": "MQTT push is the primary state source. Optionally poll the cloud API on a fixed schedule to recover state that MQTT silently drops (e.g. when the door is operated by a physical remote).",
+        "data": {
+          "poll_interval": "Periodic cloud poll"
+        }
+      }
+    }
+  },
+  "services": {
+    "refresh_state": {
+      "name": "Refresh state",
+      "description": "Force an immediate state read from the F-LINX cloud API, bypassing MQTT. Useful in automations when MQTT push updates are unreliable."
+    }
   }
 }

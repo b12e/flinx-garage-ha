@@ -8,7 +8,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_DEVICE_CODE, CONF_DEV_KEY, DOMAIN
+from .const import (
+    CONF_DEVICE_CODE,
+    CONF_DEV_KEY,
+    CONF_POLL_INTERVAL,
+    DEFAULT_POLL_INTERVAL,
+    DOMAIN,
+)
 from .coordinator import FlinxGarageCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,6 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         password=entry.data[CONF_PASSWORD],
         device_code=entry.data[CONF_DEVICE_CODE],
         dev_key=entry.data[CONF_DEV_KEY],
+        poll_interval=entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
     )
 
     # Start MQTT before first refresh so the initial state can come from it.
@@ -37,8 +44,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(coordinator.async_shutdown)
+    # Reload when options (e.g. the periodic poll interval) change.
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
     return True
+
+
+async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when its options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -15,6 +15,7 @@ from homeassistant.components.cover import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -36,6 +37,11 @@ async def async_setup_entry(
     """Set up F-LINX Garage Door cover."""
     coordinator: FlinxGarageCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([FlinxGarageCover(coordinator, entry)])
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "refresh_state", None, "async_refresh_state"
+    )
 
 
 class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
@@ -181,6 +187,10 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
             self._direction = 0
             self._cancel_direction_reset()
             self.async_write_ha_state()
+
+    async def async_refresh_state(self) -> None:
+        """Force a cloud API state refresh (flinx_garage.refresh_state action)."""
+        await self.coordinator.async_force_refresh()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         position = kwargs[ATTR_POSITION]
