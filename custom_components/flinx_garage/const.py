@@ -78,6 +78,16 @@ CONF_DEVICE_CODE = "device_code"
 CONF_DEV_KEY = "dev_key"
 CONF_DOOR_ALIAS = "door_alias"
 
+# Options-flow keys
+CONF_POLL_INTERVAL = "poll_interval"
+
+# Optional periodic cloud poll (seconds). 0 = off (MQTT-only); default.
+# When set, the coordinator polls the REST API on this cadence regardless of
+# MQTT freshness, recovering state that MQTT silently dropped.
+POLL_INTERVAL_OFF = 0
+DEFAULT_POLL_INTERVAL = POLL_INTERVAL_OFF
+POLL_INTERVAL_CHOICES = [0, 60, 120, 180, 240, 300, 600, 900, 1800, 3600]
+
 # Cloud command controlIdent values
 # (Smi-decoded from Dart ARM64 assembly: raw 0x200N >> 1)
 CLOUD_CMD_OPEN = 4097

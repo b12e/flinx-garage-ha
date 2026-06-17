@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -21,6 +22,8 @@ from bleak_retry_connector import establish_connection
 
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -75,6 +78,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         password: str,
         device_code: str,
         dev_key: str,
+        poll_interval: int = 0,
     ) -> None:
         super().__init__(
             hass,
@@ -88,6 +92,11 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._password = password
         self._device_code = device_code
         self._dev_key = dev_key
+        self._poll_interval = poll_interval
+        self._poll_unsub: Callable[[], None] | None = None
+        # Warn only once per "seen-but-not-connectable" episode to avoid log spam
+        # (the BLE scan runs on every reconnect/fallback tick).
+        self._ble_not_connectable_warned = False
 
         self._token: str | None = None
         self._ble_client: BleakClient | None = None
@@ -251,6 +260,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                     "BLE: found connectable %s (%s) rssi=%s via %s",
                     si.name, si.address, si.rssi, si.source,
                 )
+                self._ble_not_connectable_warned = False
                 return si.device
 
         all_si = list(
@@ -258,13 +268,23 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         )
         matches = [s for s in all_si if s.name and s.name.startswith(BLE_NAME_PREFIX)]
         if matches:
-            _LOGGER.warning(
-                "BLE: %s* seen but not connectable (proxy may be passive-only): %s",
-                BLE_NAME_PREFIX,
-                ", ".join(
-                    f"{s.name}/{s.address} rssi={s.rssi} src={s.source}" for s in matches
-                ),
+            # Warn once per episode, then drop to debug — this scan runs on every
+            # reconnect attempt and fallback tick, so a warning each time spams.
+            detail = ", ".join(
+                f"{s.name}/{s.address} rssi={s.rssi} src={s.source}" for s in matches
             )
+            if not self._ble_not_connectable_warned:
+                _LOGGER.warning(
+                    "BLE: %s* seen but not connectable (proxy may be passive-only); "
+                    "using cloud for commands: %s",
+                    BLE_NAME_PREFIX,
+                    detail,
+                )
+                self._ble_not_connectable_warned = True
+            else:
+                _LOGGER.debug(
+                    "BLE: %s* still not connectable: %s", BLE_NAME_PREFIX, detail
+                )
         else:
             _LOGGER.debug(
                 "BLE: no %s* device discovered (%d connectable, %d total adverts)",
@@ -643,6 +663,19 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         async with aiohttp.ClientSession() as session:
             return await self._api_get_device_info(session)
 
+    async def async_force_refresh(self) -> None:
+        """Force a cloud REST state read, bypassing the MQTT-freshness check.
+
+        Used by the flinx_garage.refresh_state action and the optional periodic
+        poll so state can be re-synced on demand when MQTT is unreliable.
+        """
+        info = await self._async_fetch_device_info()
+        if info is None:
+            raise HomeAssistantError(
+                "Unable to reach the F-LINX cloud API to refresh state"
+            )
+        self._apply_device_info(info, push_update=True)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Periodic tick: mostly a fallback when MQTT is stale."""
         # Opportunistically (re)establish BLE — doesn't fail the update if it can't.
@@ -694,8 +727,30 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         """Start MQTT connection and kick off first update."""
         await self.mqtt.connect()
 
+        # Optional unconditional periodic cloud poll (off by default).
+        if self._poll_interval > 0:
+            _LOGGER.debug(
+                "Scheduling periodic cloud poll every %ss", self._poll_interval
+            )
+            self._poll_unsub = async_track_time_interval(
+                self.hass,
+                self._async_periodic_poll,
+                timedelta(seconds=self._poll_interval),
+            )
+
+    async def _async_periodic_poll(self, now: datetime) -> None:
+        """Periodic cloud poll, independent of the MQTT-stale fallback."""
+        try:
+            await self.async_force_refresh()
+        except HomeAssistantError as err:
+            # Don't let a transient API hiccup bubble out of the timer.
+            _LOGGER.debug("Periodic cloud poll failed: %s", err)
+
     async def async_shutdown(self) -> None:
         """Disconnect MQTT and BLE cleanly."""
+        if self._poll_unsub is not None:
+            self._poll_unsub()
+            self._poll_unsub = None
         if self._post_command_refresh is not None:
             self._post_command_refresh.cancel()
         self._cancel_position_task()

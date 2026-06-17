@@ -1,0 +1,9 @@
+refresh_state:
+  name: Refresh state
+  description: >-
+    Force an immediate state read from the F-LINX cloud API, bypassing MQTT.
+    Useful in automations when MQTT push updates are unreliable.
+  target:
+    entity:
+      integration: flinx_garage
+      domain: cover

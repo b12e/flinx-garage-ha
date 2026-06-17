@@ -10,7 +10,14 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import (
     API_BASE_URL,
@@ -18,7 +25,10 @@ from .const import (
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DOOR_ALIAS,
+    CONF_POLL_INTERVAL,
+    DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    POLL_INTERVAL_CHOICES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,10 +83,28 @@ async def _query_devices(
         return []
 
 
+def _poll_interval_label(seconds: int) -> str:
+    """Human label for a poll-interval choice."""
+    if seconds == 0:
+        return "Off (MQTT only)"
+    if seconds < 3600:
+        minutes = seconds // 60
+        return f"Every {minutes} minute{'s' if minutes != 1 else ''}"
+    return "Every hour"
+
+
 class FlinxGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for F-LINX Garage Door."""
 
     VERSION = 2
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> FlinxGarageOptionsFlow:
+        """Get the options flow for this handler."""
+        return FlinxGarageOptionsFlow()
 
     def __init__(self) -> None:
         self._username: str | None = None
@@ -155,4 +183,42 @@ class FlinxGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_DEV_KEY: device["devKey"],
                 CONF_DOOR_ALIAS: alias,
             },
+        )
+
+
+class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
+    """Handle F-LINX Garage Door options (periodic cloud poll)."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure the optional periodic cloud poll."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={CONF_POLL_INTERVAL: int(user_input[CONF_POLL_INTERVAL])},
+            )
+
+        current = self.config_entry.options.get(
+            CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+        )
+        selector = SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(
+                        value=str(seconds), label=_poll_interval_label(seconds)
+                    )
+                    for seconds in POLL_INTERVAL_CHOICES
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_POLL_INTERVAL, default=str(current)): selector,
+                }
+            ),
         )
