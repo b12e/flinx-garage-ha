@@ -14,10 +14,13 @@
     "paho-mqtt>=2.1.0",
     "pycryptodome>=3.19.0"
   ],
-  "version": "2.4.0",
+  "version": "3.0.0",
   "bluetooth": [
     {
       "local_name": "Noru_*"
+    },
+    {
+      "local_name": "opener_*"
     }
   ]
 }

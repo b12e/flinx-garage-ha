@@ -22,8 +22,8 @@ MQTT_TOPIC_SERVICE_UP = "/thing/dongle/{device_code}/service/up"
 MQTT_TOPIC_SERVICE_DOWN = "/thing/dongle/{device_code}/service/down"
 MQTT_TOPIC_WILDCARD = "/thing/dongle/{device_code}/#"
 
-# BLE configuration
-BLE_NAME_PREFIX = "Noru_"  # Match any Noru_* device (discovered via HA Bluetooth)
+# BLE configuration.
+BLE_NAME_PREFIXES = ("Noru_", "opener_")
 BLE_WRITE_CHAR = "02362a10-cf3a-11e1-efdc-000215d5c51b"
 BLE_NOTIFY_CHAR = "02362a11-cf3a-11e1-efdc-000215d5c51b"
 BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
@@ -77,6 +77,7 @@ CONF_PASSWORD = "password"
 CONF_DEVICE_CODE = "device_code"
 CONF_DEV_KEY = "dev_key"
 CONF_DOOR_ALIAS = "door_alias"
+CONF_DEVICES = "devices"
 
 # Options-flow keys
 CONF_POLL_INTERVAL = "poll_interval"

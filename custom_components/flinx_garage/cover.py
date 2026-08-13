@@ -34,9 +34,9 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up F-LINX Garage Door cover."""
-    coordinator: FlinxGarageCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([FlinxGarageCover(coordinator, entry)])
+    """Set up F-LINX Garage Door covers."""
+    coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
+    async_add_entities(FlinxGarageCover(c) for c in coordinators.values())
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(
@@ -57,14 +57,13 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
     _attr_has_entity_name = True
     _attr_name = "Garage Door"
 
-    def __init__(
-        self, coordinator: FlinxGarageCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: FlinxGarageCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_cover"
+        device_code = coordinator.device_code
+        self._attr_unique_id = f"{device_code}_cover"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.data.get("door_alias") or "F-LINX Garage Door",
+            "identifiers": {(DOMAIN, device_code)},
+            "name": coordinator.door_alias,
             "manufacturer": "F-LINX",
             "model": "BIT-DOOR",
         }

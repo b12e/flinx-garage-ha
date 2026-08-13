@@ -34,7 +34,7 @@ from .const import (
     ATTR_OPERATED_CYCLES,
     BLE_ACK_TIMEOUT,
     BLE_CONNECT_TIMEOUT,
-    BLE_NAME_PREFIX,
+    BLE_NAME_PREFIXES,
     BLE_NOTIFY_CHAR,
     BLE_NOTIFY_CHAR2,
     BLE_WRITE_CHAR,
@@ -54,6 +54,7 @@ from .const import (
     POSITION_TIMEOUT,
     POSITION_TOLERANCE,
 )
+from .account import FlinxAccount
 from .crypto import (
     BLE_CMD_CLOSE,
     BLE_CMD_LED_OFF,
@@ -74,10 +75,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
-        username: str,
-        password: str,
+        account: FlinxAccount,
         device_code: str,
         dev_key: str,
+        door_alias: str,
         poll_interval: int = 0,
     ) -> None:
         super().__init__(
@@ -88,17 +89,16 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             # in case MQTT disconnects or we miss messages.
             update_interval=timedelta(seconds=DEFAULT_FALLBACK_SCAN_INTERVAL),
         )
-        self._username = username
-        self._password = password
+        self._account = account
         self._device_code = device_code
         self._dev_key = dev_key
+        self._door_alias = door_alias
         self._poll_interval = poll_interval
         self._poll_unsub: Callable[[], None] | None = None
         # Warn only once per "seen-but-not-connectable" episode to avoid log spam
         # (the BLE scan runs on every reconnect/fallback tick).
         self._ble_not_connectable_warned = False
 
-        self._token: str | None = None
         self._ble_client: BleakClient | None = None
         self._ble_connecting = False
         self._command_lock = asyncio.Lock()
@@ -122,6 +122,16 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             dev_key_hex=dev_key,
             on_attrs=self._on_mqtt_attrs,
         )
+
+    @property
+    def device_code(self) -> str:
+        """Cloud device code (16 hex chars) for this coordinator."""
+        return self._device_code
+
+    @property
+    def door_alias(self) -> str:
+        """User-facing alias for this door."""
+        return self._door_alias
 
     # -----------------------------------------------------------------
     # MQTT inbound
@@ -245,7 +255,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self._ble_connecting = False
 
     def _find_ble_device(self):
-        """Find the Noru_* device among discovered BLE advertisements.
+        """Find the F-LINX device among discovered BLE advertisements.
 
         Logs why no connection is attempted so we can distinguish "device not
         seen at all", "seen but not connectable" (a passive-only proxy), and
@@ -255,7 +265,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             bluetooth.async_discovered_service_info(self.hass, connectable=True)
         )
         for si in connectable:
-            if si.name and si.name.startswith(BLE_NAME_PREFIX):
+            if si.name and any(si.name.startswith(p) for p in BLE_NAME_PREFIXES):
                 _LOGGER.debug(
                     "BLE: found connectable %s (%s) rssi=%s via %s",
                     si.name, si.address, si.rssi, si.source,
@@ -266,7 +276,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         all_si = list(
             bluetooth.async_discovered_service_info(self.hass, connectable=False)
         )
-        matches = [s for s in all_si if s.name and s.name.startswith(BLE_NAME_PREFIX)]
+        matches = [
+            s for s in all_si if s.name and any(s.name.startswith(p) for p in BLE_NAME_PREFIXES)
+        ]
         if matches:
             # Warn once per episode, then drop to debug — this scan runs on every
             # reconnect attempt and fallback tick, so a warning each time spams.
@@ -275,20 +287,22 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             )
             if not self._ble_not_connectable_warned:
                 _LOGGER.warning(
-                    "BLE: %s* seen but not connectable (proxy may be passive-only); "
+                    "BLE: %s seen but not connectable (proxy may be passive-only); "
                     "using cloud for commands: %s",
-                    BLE_NAME_PREFIX,
+                    ", ".join(f"{p}*" for p in BLE_NAME_PREFIXES),
                     detail,
                 )
                 self._ble_not_connectable_warned = True
             else:
                 _LOGGER.debug(
-                    "BLE: %s* still not connectable: %s", BLE_NAME_PREFIX, detail
+                    "BLE: %s still not connectable: %s",
+                    ", ".join(f"{p}*" for p in BLE_NAME_PREFIXES),
+                    detail,
                 )
         else:
             _LOGGER.debug(
                 "BLE: no %s* device discovered (%d connectable, %d total adverts)",
-                BLE_NAME_PREFIX, len(connectable), len(all_si),
+                ", ".join(BLE_NAME_PREFIXES), len(connectable), len(all_si),
             )
         return None
 
@@ -546,14 +560,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             headers = {
                 "Accept-Language": "en",
                 "Api-Version": API_VERSION,
-                "Authorization": f"Bearer {self._token}",
                 "client-id": "f-linx",
             }
             for attempt in range(2):
-                if not self._token and not await self._api_login(session):
+                token = await self._account.async_get_token(session)
+                if not token:
                     _LOGGER.error("Cloud command failed: unable to authenticate")
                     return False
-                headers["Authorization"] = f"Bearer {self._token}"
+                headers["Authorization"] = f"Bearer {token}"
                 try:
                     async with session.get(url, params=params, headers=headers) as resp:
                         if resp.status == 200:
@@ -565,12 +579,12 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                             # Re-auth and retry on token/auth errors
                             if "认证" in msg or "token" in msg.lower() or "auth" in msg.lower():
                                 _LOGGER.debug("Cloud token expired, re-authenticating")
-                                self._token = None
+                                self._account.async_invalidate_token()
                                 continue
                             _LOGGER.warning("Cloud command rejected: %s", msg)
                             return False
                         elif resp.status == 401:
-                            self._token = None
+                            self._account.async_invalidate_token()
                             continue
                         else:
                             _LOGGER.warning("Cloud command HTTP %s", resp.status)
@@ -584,49 +598,36 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     # REST fallback (used when MQTT is disconnected or stale)
     # -----------------------------------------------------------------
 
-    async def _api_login(self, session: aiohttp.ClientSession) -> bool:
-        url = f"{API_BASE_URL}/app/user/login"
-        headers = {"api-version": API_VERSION, "Content-Type": "application/json"}
-        payload = {"username": self._username, "password": self._password}
-        try:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("code") == 200:
-                        self._token = data["data"]["token"]
-                        return True
-                _LOGGER.debug("API login failed: status=%s", resp.status)
-                return False
-        except aiohttp.ClientError as err:
-            _LOGGER.debug("API login error: %s", err)
-            return False
-
     async def _api_get_device_info(
         self, session: aiohttp.ClientSession
     ) -> dict[str, Any] | None:
-        if not self._token and not await self._api_login(session):
-            return None
-
-        url = f"{API_BASE_URL}/device/deviceInfo/{self._device_code}"
-        headers = {
-            "api-version": API_VERSION,
-            "Authorization": f"Bearer {self._token}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with session.post(url, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("code") == 200:
-                        return data.get("data", {})
-                elif resp.status == 401:
-                    self._token = None
-                    if await self._api_login(session):
-                        return await self._api_get_device_info(session)
+        # Bound the 401 retry: invalidate, re-login once, then give up so a
+        # persistently rejected session cannot recurse into a login storm.
+        for _ in range(2):
+            token = await self._account.async_get_token(session)
+            if not token:
                 return None
-        except aiohttp.ClientError as err:
-            _LOGGER.debug("API get device info error: %s", err)
-            return None
+
+            url = f"{API_BASE_URL}/device/deviceInfo/{self._device_code}"
+            headers = {
+                "api-version": API_VERSION,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            try:
+                async with session.post(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("code") == 200:
+                            return data.get("data", {})
+                    elif resp.status == 401:
+                        self._account.async_invalidate_token()
+                        continue
+                    return None
+            except aiohttp.ClientError as err:
+                _LOGGER.debug("API get device info error: %s", err)
+                return None
+        return None
 
     def _apply_device_info(self, info: dict[str, Any], push_update: bool) -> None:
         changed = False

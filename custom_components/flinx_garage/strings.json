@@ -9,11 +9,11 @@
           "password": "Password"
         }
       },
-      "select_device": {
-        "title": "Select garage door",
-        "description": "Your account has multiple doors. Choose which one to add.",
+      "devices": {
+        "title": "Select garage doors",
+        "description": "Your account has multiple doors. All are selected by default — uncheck any you don't want to add.",
         "data": {
-          "device_code": "Device"
+          "devices": "Devices"
         }
       }
     },
@@ -21,22 +21,45 @@
       "cannot_connect": "Failed to connect to F-LINX API",
       "invalid_auth": "Invalid username or password",
       "no_devices": "No devices found on this account",
+      "no_devices_selected": "Select at least one device",
       "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "Device is already configured",
-      "device_not_found": "Selected device not found"
+      "already_configured": "Account is already configured"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "F-LINX Garage Door options",
+        "description": "Choose what to configure.",
+        "menu_options": {
+          "poll_interval": "Periodic cloud poll",
+          "devices": "Manage devices"
+        }
+      },
+      "poll_interval": {
+        "title": "F-LINX Garage Door options",
         "description": "MQTT push is the primary state source. Optionally poll the cloud API on a fixed schedule to recover state that MQTT silently drops (e.g. when the door is operated by a physical remote).",
         "data": {
           "poll_interval": "Periodic cloud poll"
         }
+      },
+      "devices": {
+        "title": "Manage devices",
+        "description": "Select which doors on this account to configure.",
+        "data": {
+          "devices": "Devices"
+        }
       }
+    },
+    "error": {
+      "no_devices_selected": "Select at least one device"
+    },
+    "abort": {
+      "invalid_auth": "Invalid username or password",
+      "no_devices": "No devices found on this account",
+      "cannot_connect": "Failed to connect to F-LINX API"
     }
   },
   "services": {

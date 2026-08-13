@@ -27,7 +27,7 @@ You can drive the door to a specific percentage with the cover position slider o
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration → F-LinX Garage Door**
 4. Enter your F-LinX account credentials
-5. Select your device (auto-detected from your account)
+5. Select which doors to add (all devices on your account are pre-selected)
 
 ## Requirements
 

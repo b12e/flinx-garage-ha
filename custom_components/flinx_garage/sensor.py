@@ -25,10 +25,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up F-LINX Garage Door sensors."""
-    coordinator: FlinxGarageCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([
-        FlinxOperationCountSensor(coordinator, entry),
-    ])
+    coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
+    async_add_entities(
+        FlinxOperationCountSensor(c) for c in coordinators.values()
+    )
 
 
 class FlinxOperationCountSensor(CoordinatorEntity[FlinxGarageCoordinator], SensorEntity):
@@ -39,15 +39,14 @@ class FlinxOperationCountSensor(CoordinatorEntity[FlinxGarageCoordinator], Senso
     _attr_name = "Operation Count"
     _attr_icon = "mdi:counter"
 
-    def __init__(
-        self, coordinator: FlinxGarageCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: FlinxGarageCoordinator) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_operation_count"
+        device_code = coordinator.device_code
+        self._attr_unique_id = f"{device_code}_operation_count"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": "F-LINX Garage Door",
+            "identifiers": {(DOMAIN, device_code)},
+            "name": coordinator.door_alias,
             "manufacturer": "F-LINX",
             "model": "BIT-DOOR",
         }

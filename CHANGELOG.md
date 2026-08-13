@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0
+
+### Added
+- **Account-based setup** — log in once; all devices on your account are listed and added in a single integration entry.
+- **Single API session** — all devices now share one Bit Door session, allowing multiple devices to work using the same account.
+
+### Changed
+- BLE discovery now also matches `opener_*` device names (in addition to `Noru_*`).
+- **Breaking:** existing per-device config entries must be removed and re-added (one login re-adds all devices).
+
 ## 2.3.0
 
 ### Added
