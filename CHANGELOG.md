@@ -15,6 +15,7 @@
 - Minimum Home Assistant version is now 2025.2.0.
 
 ### Fixed
+- A Bluetooth command that the opener never answers no longer fails the action with `Timeout waiting for BluetoothGATTWriteResponse ... after 30.0s`. Writes are bounded at 5 seconds and fall back to the cloud, and a proxy's own transport errors are handled rather than raised at whoever pressed the button.
 - Config flow, options and action descriptions now show their proper text instead of raw translation keys - Home Assistant loads custom integration translations from `translations/en.json`, which was missing (only `strings.json` was shipped, and that file is never read at runtime).
 - Corrected the `manifest.json` key order so the integration passes Home Assistant's hassfest validation.
 - The options flow no longer logs in behind the coordinators' back, which revoked the session they were using (the API allows one session per account).

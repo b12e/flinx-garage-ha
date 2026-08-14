@@ -41,6 +41,7 @@ from .const import (
     BLE_NOTIFY_CHAR,
     BLE_NOTIFY_CHAR2,
     BLE_WRITE_CHAR,
+    BLE_WRITE_TIMEOUT,
     CLOUD_CMD_CLOSE,
     CLOUD_CMD_LED_OFF,
     CLOUD_CMD_LED_ON,
@@ -268,9 +269,12 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 # once after service discovery (with a short settle delay).
                 await asyncio.sleep(0.8)
                 self._last_notification = None
-                await self._ble_client.write_gatt_char(
-                    BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
-                )
+                # Bounded separately from the connect budget: a write that hangs
+                # on the proxy would otherwise eat the whole of it.
+                async with asyncio.timeout(BLE_WRITE_TIMEOUT):
+                    await self._ble_client.write_gatt_char(
+                        BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
+                    )
                 await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
 
             self.is_ble_connected = True
@@ -462,11 +466,20 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 # once at connect time, so we only write the command frame here.
                 self._last_notification = None
                 cmd_frame = build_ble_command(ble_cmd_id, dev_key)
-                await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
-            except (BleakError, AttributeError) as err:
-                _LOGGER.debug("BLE command failed: %s", err)
-                self.is_ble_connected = False
-                self._ble_client = None
+                async with asyncio.timeout(BLE_WRITE_TIMEOUT):
+                    await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
+            # Deliberately broad: BLE is the optimisation, the cloud is the
+            # fallback, so nothing on this path may fail the user's action. A
+            # proxy raises its own transport errors (e.g. aioesphomeapi's
+            # TimeoutAPIError), which are not BleakError.
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "BLE command failed (%s: %s); using cloud",
+                    type(err).__name__, err,
+                )
+                # The link is suspect now — drop it so the slot is freed and the
+                # next command starts from a fresh connect.
+                await self._teardown_ble_client()
                 return False
 
         # Wait (outside the write lock) for an acknowledgement notification.

@@ -18,10 +18,33 @@ from .harness import (  # noqa: F401 — .harness installs the import stubs
 
 import asyncio
 import logging
+from unittest.mock import AsyncMock, patch
+
+from bleak.exc import BleakError
 
 from custom_components.flinx_garage import coordinator as coordinator_module
 from custom_components.flinx_garage.account import FlinxAccount
-from custom_components.flinx_garage.const import CONF_DEVICES
+from custom_components.flinx_garage.const import BLE_WRITE_TIMEOUT, CONF_DEVICES
+
+
+class FakeBleClient:
+    """A connected BLE client whose writes misbehave the way a proxy does."""
+
+    def __init__(self, error: BaseException | None = None, hang: bool = False):
+        self.is_connected = True
+        self.disconnected = False
+        self._error = error
+        self._hang = hang
+
+    async def write_gatt_char(self, char, data):
+        if self._hang:
+            await asyncio.sleep(3600)
+        if self._error is not None:
+            raise self._error
+
+    async def disconnect(self):
+        self.disconnected = True
+        self.is_connected = False
 
 
 # The cloud reports openers as "<prefix>_<MAC without separators>".
@@ -198,6 +221,67 @@ async def main() -> None:
             )
         finally:
             coordinator_module.bluetooth.async_discovered_service_info = original
+
+        await write_failure_checks(hass, entry)
+
+
+async def write_failure_checks(hass, entry) -> None:
+    """A misbehaving GATT write must never fail the user's action.
+
+    A write through a BLE proxy waits for the device's write response, and the
+    proxy raises its own transport error when that never comes (aioesphomeapi's
+    TimeoutAPIError, which is not a BleakError). That has to end as a cloud
+    command, not as a failed service call.
+    """
+    print("\n== BLE write failures fall back to the cloud ==")
+    # Keep the "hangs forever" case fast.
+    original_timeout = coordinator_module.BLE_WRITE_TIMEOUT
+    coordinator_module.BLE_WRITE_TIMEOUT = 0.05
+    try:
+        for label, client in (
+            ("a proxy transport error", FakeBleClient(error=RuntimeError("no response"))),
+            ("a BleakError", FakeBleClient(error=BleakError("disconnected"))),
+            ("a write that hangs", FakeBleClient(hang=True)),
+        ):
+            coordinator = make_coordinator(hass, entry, CODE_A, ble_name=NAME_A)
+            coordinator._ble_client = client  # noqa: SLF001
+            coordinator.is_ble_connected = True
+
+            started = hass.loop.time()
+            try:
+                sent = await coordinator._send_ble_command(1)  # noqa: SLF001
+            except Exception as err:  # noqa: BLE001
+                check(f"{label} is contained", False, f"raised {type(err).__name__}")
+                continue
+            elapsed = hass.loop.time() - started
+
+            check(f"{label} reports failure instead of raising", sent is False)
+            check(
+                f"{label} drops the suspect link",
+                client.disconnected and coordinator._ble_client is None  # noqa: SLF001
+                and coordinator.is_ble_connected is False,
+            )
+            check(
+                f"{label} gives up quickly",
+                elapsed < 1,
+                f"{elapsed:.2f}s",
+            )
+
+            # The full command path must still succeed, via the cloud.
+            coordinator._ble_client = client  # noqa: SLF001
+            coordinator.is_ble_connected = True
+            with (
+                patch.object(
+                    coordinator, "_send_cloud_command", new=AsyncMock(return_value=True)
+                ) as cloud,
+                # Its post-command poll would hit the real API.
+                patch.object(coordinator, "_schedule_post_command_refresh"),
+            ):
+                ok = await coordinator._send_command(1, 4101)  # noqa: SLF001
+            check(f"{label} still commands the door via the cloud", ok is True)
+            check(f"{label} triggered exactly one cloud command", cloud.await_count == 1)
+    finally:
+        coordinator_module.BLE_WRITE_TIMEOUT = original_timeout
 
 
 if __name__ == "__main__":

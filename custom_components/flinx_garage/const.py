@@ -33,6 +33,12 @@ BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
 # without an ack within this window we treat BLE as failed and fall back to cloud.
 BLE_ACK_TIMEOUT = 1.5  # seconds
 
+# Upper bound on a single GATT write. A write through a BLE proxy waits for the
+# device's write response and can hang for the proxy's own timeout (30s with
+# ESPHome) if the device never answers. Commands must reach the door long before
+# that, so writes fail fast and fall back to the cloud instead.
+BLE_WRITE_TIMEOUT = 5  # seconds
+
 # Upper bound on a full BLE connect (link + service discovery + notify setup).
 # A proxy link can establish but then stall during discovery; the timeout stops
 # that from wedging _ble_connecting and frees the connection slot.
