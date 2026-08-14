@@ -10,9 +10,9 @@ This integration works with [this](https://www.myforcedoor.com/prodetails/49/546
 
 ## Features
 
-- **Real-time state** via MQTT — door position, LED status, operation count
-- **Local commands** via Bluetooth — works without internet
-- **Remote commands** via cloud API — fallback when Bluetooth is not available
+- **Real-time state** via MQTT - door position, LED status, operation count
+- **Local commands** via Bluetooth - works without internet
+- **Remote commands** via cloud API - fallback when Bluetooth is not available
 - Garage door cover entity (open / close / stop / set position)
 - LED light entity (on / off)
 - Operation count sensor
