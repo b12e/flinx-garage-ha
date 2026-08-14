@@ -23,7 +23,7 @@ from homeassistant.config_entries import ConfigEntryState
 
 import custom_components.flinx_garage as flinx
 from custom_components.flinx_garage.const import (
-    CONF_BLE_ADDRESS,
+    CONF_BLE_NAME,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
@@ -59,7 +59,7 @@ async def main() -> None:
                         CONF_DEVICE_CODE: CODE_A,
                         CONF_DEV_KEY: "ab" * 16,
                         CONF_DOOR_ALIAS: "Garage",
-                        CONF_BLE_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                        CONF_BLE_NAME: "Noru_9C9E6E09CAFC",
                     },
                     {
                         CONF_DEVICE_CODE: CODE_B,
@@ -105,9 +105,9 @@ async def main() -> None:
                 ),
             )
             check(
-                "bound BLE address passed through",
-                coordinators[CODE_A]._ble_address == "AA:BB:CC:DD:EE:FF"  # noqa: SLF001
-                and coordinators[CODE_B]._ble_address is None,  # noqa: SLF001
+                "reported opener name passed through",
+                coordinators[CODE_A]._ble_name == "Noru_9C9E6E09CAFC"  # noqa: SLF001
+                and coordinators[CODE_B]._ble_name is None,  # noqa: SLF001
             )
             check(
                 "BLE autodetect off with two doors",

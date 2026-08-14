@@ -6,13 +6,12 @@
 - **Account-based setup** - log in once; all devices on your account are listed and added in a single integration entry.
 - **Single API session** - all devices now share one Bit Door session, allowing multiple devices to work using the same account.
 - **Manage devices** option - add or remove doors later without re-adding the integration.
-- **Bluetooth** option - point each door at its own opener. Needed for local BLE commands once more than one door is configured.
+- Bluetooth discovery: an F-LinX opener in range now offers to set the integration up.
 
 ### Changed
 - Existing setups upgrade in place: pre-3.0 entries are converted to the new account format automatically, keeping their entity IDs, names, areas and history. Two entries for the same account are merged into one.
 - BLE discovery now also matches `opener_*` device names (in addition to `Noru_*`).
-- Commands only go over Bluetooth to a door the integration can positively identify (a bound address, or an advertised name ending in the device code). With several doors and no binding, that door uses the cloud rather than risk commanding the wrong one.
-- Removed the Bluetooth discovery matchers from the manifest - setup needs account credentials, so the discovery flow they triggered could only fail.
+- Each door now only talks to its own opener, matched on the `bluetoothName` the cloud reports for it (or the address encoded in that name). With several doors configured and no opener reported for one, that door uses the cloud rather than risk commanding the wrong one.
 - Minimum Home Assistant version is now 2025.2.0.
 
 ### Fixed

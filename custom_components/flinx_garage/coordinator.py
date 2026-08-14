@@ -30,6 +30,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     API_BASE_URL,
+    API_KEY_BLE_NAME,
     API_VERSION,
     ATTR_DOOR_POSITION,
     ATTR_LED_ACTUAL,
@@ -76,6 +77,22 @@ def _is_flinx_name(name: str | None) -> bool:
     return bool(name) and name.startswith(BLE_NAME_PREFIXES)
 
 
+def address_from_ble_name(name: str | None) -> str | None:
+    """Recover the peripheral address from an opener's local name.
+
+    The cloud API reports names as ``<prefix>_<MAC without separators>``
+    (e.g. ``Noru_9C9E6E09CAFC``), so the address can be read straight out of
+    it — useful because a proxy can pass on an advertisement with no local name
+    at all, while the address is always there.
+    """
+    if not name or "_" not in name:
+        return None
+    tail = name.rsplit("_", 1)[-1]
+    if len(tail) != 12 or any(c not in "0123456789abcdefABCDEF" for c in tail):
+        return None
+    return ":".join(tail[i : i + 2] for i in range(0, 12, 2)).upper()
+
+
 class FlinxGarageCoordinator(DataUpdateCoordinator):
     """Hybrid MQTT (state) + BLE (commands) coordinator."""
 
@@ -87,7 +104,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         device_code: str,
         dev_key: str,
         door_alias: str,
-        ble_address: str | None = None,
+        ble_name: str | None = None,
         ble_autodetect: bool = True,
         poll_interval: int = 0,
     ) -> None:
@@ -104,7 +121,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._device_code = device_code
         self._dev_key = dev_key
         self._door_alias = door_alias
-        self._ble_address = ble_address
+        # The opener's local name as the cloud reports it; refreshed from every
+        # deviceInfo read, so entries migrated from pre-3.0 pick it up too.
+        self._ble_name = ble_name
         self._ble_autodetect = ble_autodetect
         self._poll_interval = poll_interval
         self._poll_unsub: Callable[[], None] | None = None
@@ -289,34 +308,36 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     def _match_ble_device(self, service_infos):
         """Return the advertisement that is certainly this door, or None.
 
-        Resolution is deliberately strict, because an advertisement carries
-        nothing that identifies a deviceCode: with several doors in range,
-        picking the wrong peripheral would mean writing frames built from
-        another door's devKey. In order of confidence:
+        Resolution is deliberately strict: with several doors in range, picking
+        the wrong peripheral would mean writing frames built from another door's
+        devKey. In order of confidence:
 
-        1. the address bound to this door in the options flow;
-        2. a local name ending in this door's device code;
-        3. any Noru_*/opener_* peripheral — but only when this is the one and
+        1. the opener name the cloud reports for this door (``bluetoothName``),
+           matched on the name itself or on the address embedded in it;
+        2. any Noru_*/opener_* peripheral — but only when this is the one and
            only configured door, where there is nothing to confuse it with.
         """
-        if self._ble_address:
-            wanted = self._ble_address.upper()
+        if self._ble_name:
+            wanted = self._ble_name.casefold()
             for si in service_infos:
-                if si.address.upper() == wanted:
+                if si.name and si.name.casefold() == wanted:
                     _LOGGER.debug(
-                        "BLE: %s (%s) matches the address bound to %s rssi=%s via %s",
+                        "BLE: %s (%s) is the opener the cloud reports for %s "
+                        "rssi=%s via %s",
                         si.name, si.address, self._door_alias, si.rssi, si.source,
                     )
                     return si.device
+            # A proxy can forward an advertisement without its local name, so
+            # fall back to the address the name encodes.
+            if (address := address_from_ble_name(self._ble_name)) is not None:
+                match = self._match_address(service_infos, address)
+                if match is not None:
+                    _LOGGER.debug(
+                        "BLE: %s matches the address in %s's opener name (%s)",
+                        address, self._door_alias, self._ble_name,
+                    )
+                return match
             return None
-
-        for si in service_infos:
-            if self._name_identifies_device(si.name):
-                _LOGGER.debug(
-                    "BLE: %s (%s) identifies device %s rssi=%s via %s",
-                    si.name, si.address, self._device_code, si.rssi, si.source,
-                )
-                return si.device
 
         if not self._ble_autodetect:
             return None
@@ -331,20 +352,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
         return None
 
-    def _name_identifies_device(self, name: str | None) -> bool:
-        """True when a local name ends in a tail of this door's device code.
-
-        The peripherals are named after the device they belong to (Noru_<tail>,
-        opener_<tail>), so a suffix match pins an advert to one deviceCode
-        without the user having to bind an address by hand. At least 4 hex
-        characters are required so the match can't be a coincidence.
-        """
-        if not _is_flinx_name(name):
-            return False
-        suffix = name.rsplit("_", 1)[-1].lower()
-        if len(suffix) < 4 or any(c not in "0123456789abcdef" for c in suffix):
-            return False
-        return self._device_code.lower().endswith(suffix)
+    @staticmethod
+    def _match_address(service_infos, address: str):
+        """Return the advertisement with this address, or None."""
+        wanted = address.upper()
+        for si in service_infos:
+            if si.address.upper() == wanted:
+                return si.device
+        return None
 
     def _log_no_ble_device(self, connectable: list) -> None:
         """Explain why no BLE connection is attempted.
@@ -364,14 +379,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         )
         prefixes = ", ".join(f"{p}*" for p in BLE_NAME_PREFIXES)
 
-        if self._ble_address:
-            reason = f"bound address {self._ble_address} is not connectable"
+        if self._ble_name:
+            reason = f"opener {self._ble_name} is not connectable"
             warn = True
         elif not self._ble_autodetect:
             reason = (
-                f"no advertisement identifies device {self._device_code}, and no "
-                "Bluetooth address is bound — bind one under the integration's "
-                "Bluetooth options to use BLE with more than one door"
+                "the cloud reports no opener for this door, and with more than "
+                "one door configured an unidentified opener can't be assumed to "
+                "be this one"
             )
             warn = True
         elif matches:
@@ -724,6 +739,16 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     def _apply_device_info(self, info: dict[str, Any], push_update: bool) -> None:
         changed = False
+
+        # deviceInfo carries the opener's BLE name; picking it up here means an
+        # entry migrated from pre-3.0 gets an exact BLE match without the user
+        # having to re-run the config flow.
+        ble_name = info.get(API_KEY_BLE_NAME)
+        if ble_name and ble_name != self._ble_name:
+            _LOGGER.debug(
+                "Cloud reports opener %s for %s", ble_name, self._door_alias
+            )
+            self._ble_name = ble_name
 
         for attr in info.get("attributes", []):
             code = attr.get("attributeCode")

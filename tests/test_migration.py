@@ -23,7 +23,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 import custom_components.flinx_garage as flinx
 from custom_components.flinx_garage.const import (
-    CONF_BLE_ADDRESS,
+    CONF_BLE_NAME,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
@@ -235,7 +235,7 @@ async def scenario_pre3_plus_account(hass: HomeAssistant) -> None:
                 CONF_DEVICE_CODE: CODE_A,
                 CONF_DEV_KEY: DEV_KEY,
                 CONF_DOOR_ALIAS: "Garage",
-                CONF_BLE_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                CONF_BLE_NAME: "Noru_9C9E6E09CAFC",
             }
         ],
         entry_id="entry_new",
@@ -254,9 +254,8 @@ async def scenario_pre3_plus_account(hass: HomeAssistant) -> None:
     codes = [d[CONF_DEVICE_CODE] for d in account_entry.data[CONF_DEVICES]]
     check("door appended to the 3.0 entry", codes == [CODE_A, CODE_B], str(codes))
     check(
-        "existing BLE binding kept",
-        account_entry.data[CONF_DEVICES][0].get(CONF_BLE_ADDRESS)
-        == "AA:BB:CC:DD:EE:FF",
+        "the existing door's opener name is kept",
+        account_entry.data[CONF_DEVICES][0].get(CONF_BLE_NAME) == "Noru_9C9E6E09CAFC",
     )
     check(
         "old entry removed", hass.config_entries.async_get_entry(old.entry_id) is None

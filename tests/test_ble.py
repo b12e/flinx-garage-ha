@@ -24,7 +24,14 @@ from custom_components.flinx_garage.account import FlinxAccount
 from custom_components.flinx_garage.const import CONF_DEVICES
 
 
-def make_coordinator(hass, entry, device_code, *, ble_address=None, autodetect=True):
+# The cloud reports openers as "<prefix>_<MAC without separators>".
+NAME_A = "Noru_9C9E6E09CAFC"
+ADDRESS_A = "9C:9E:6E:09:CA:FC"
+NAME_B = "opener_AABBCCDDEEFF"
+ADDRESS_B = "AA:BB:CC:DD:EE:FF"
+
+
+def make_coordinator(hass, entry, device_code, *, ble_name=None, autodetect=True):
     return coordinator_module.FlinxGarageCoordinator(
         hass,
         entry,
@@ -32,7 +39,7 @@ def make_coordinator(hass, entry, device_code, *, ble_address=None, autodetect=T
         device_code=device_code,
         dev_key="ab" * 16,
         door_alias=f"Door {device_code[-4:]}",
-        ble_address=ble_address,
+        ble_name=ble_name,
         ble_autodetect=autodetect,
         poll_interval=0,
     )
@@ -80,18 +87,20 @@ async def main() -> None:
             multi_b._match_ble_device(anonymous) is None,  # noqa: SLF001
         )
 
-        # A name carrying the device code identifies a door on its own.
-        identified = [advert("opener_6677", "AA:01"), advert("Noru_eeff", "AA:02")]
-        a_match = multi_a._match_ble_device(identified)  # noqa: SLF001
-        b_match = multi_b._match_ble_device(identified)  # noqa: SLF001
+        # The opener name the cloud reports identifies a door exactly.
+        named_a = make_coordinator(hass, entry, CODE_A, ble_name=NAME_A, autodetect=False)
+        named_b = make_coordinator(hass, entry, CODE_B, ble_name=NAME_B, autodetect=False)
+        identified = [advert(NAME_A, ADDRESS_A), advert(NAME_B, ADDRESS_B)]
+        a_match = named_a._match_ble_device(identified)  # noqa: SLF001
+        b_match = named_b._match_ble_device(identified)  # noqa: SLF001
         check(
-            "door A matches the advert ending in its code",
-            a_match is not None and a_match.address == "AA:01",
+            "door A matches its reported opener",
+            a_match is not None and a_match.address == ADDRESS_A,
             f"found={a_match.address if a_match else None}",
         )
         check(
-            "door B matches the advert ending in its code",
-            b_match is not None and b_match.address == "AA:02",
+            "door B matches its reported opener",
+            b_match is not None and b_match.address == ADDRESS_B,
             f"found={b_match.address if b_match else None}",
         )
         check(
@@ -101,31 +110,61 @@ async def main() -> None:
             and a_match.address != b_match.address,
         )
         check(
-            "a suffix too short to be unambiguous is ignored",
-            multi_a._match_ble_device([advert("opener_77", "AA:03")]) is None,  # noqa: SLF001
+            "name matching is case-insensitive",
+            (m := named_a._match_ble_device([advert(NAME_A.lower(), ADDRESS_A)]))  # noqa: SLF001
+            is not None
+            and m.address == ADDRESS_A,
         )
         check(
-            "a non-F-LINX name is not matched on its suffix",
-            multi_a._match_ble_device([advert("kettle_6677", "AA:04")]) is None,  # noqa: SLF001
+            "another door's opener is never used",
+            named_a._match_ble_device([advert(NAME_B, ADDRESS_B)]) is None,  # noqa: SLF001
         )
 
-        # A bound address wins, and is the only thing considered.
-        bound = make_coordinator(hass, entry, CODE_A, ble_address="AA:02")
-        bound_match = bound._match_ble_device(identified)  # noqa: SLF001
+        # A proxy can forward an advertisement with no local name; the address is
+        # recoverable from the reported name.
         check(
-            "a bound address is used even when another advert names this door",
-            bound_match is not None and bound_match.address == "AA:02",
-            f"found={bound_match.address if bound_match else None}",
+            "falls back to the address encoded in the reported name",
+            (m := named_a._match_ble_device([advert(None, ADDRESS_A)])) is not None  # noqa: SLF001
+            and m.address == ADDRESS_A,
         )
-        lowercase = make_coordinator(hass, entry, CODE_A, ble_address="aa:02")
-        lower_match = lowercase._match_ble_device(identified)  # noqa: SLF001
+        check(
+            "address recovered from a reported name",
+            coordinator_module.address_from_ble_name(NAME_A) == ADDRESS_A,
+            coordinator_module.address_from_ble_name(NAME_A),
+        )
+        for bad in ("Noru_9C9E", "opener_ZZZZZZZZZZZZ", "Noru", ""):
+            check(
+                f"no address recovered from {bad!r}",
+                coordinator_module.address_from_ble_name(bad) is None,
+            )
+
+        # deviceInfo also reports the name, so a migrated entry picks it up.
+        learned = make_coordinator(hass, entry, CODE_A, autodetect=False)
+        learned._apply_device_info(  # noqa: SLF001
+            {"bluetoothName": NAME_A, "onlineState": 1}, push_update=False
+        )
+        check(
+            "opener name learned from a cloud state read",
+            (m := learned._match_ble_device(identified)) is not None  # noqa: SLF001
+            and m.address == ADDRESS_A,
+        )
+
         check(
             "address matching is case-insensitive",
-            lower_match is not None and lower_match.address == "AA:02",
+            (m := named_a._match_ble_device([advert(None, ADDRESS_A.lower())]))  # noqa: SLF001
+            is not None
+            and m.address == ADDRESS_A.lower(),
         )
         check(
-            "a bound address that isn't advertising falls back to nothing",
-            bound._match_ble_device([advert("opener_6677", "AA:01")]) is None,  # noqa: SLF001
+            "a reported opener that isn't advertising resolves to nothing",
+            named_a._match_ble_device([advert(NAME_B, ADDRESS_B)]) is None,  # noqa: SLF001
+        )
+        check(
+            "a reported opener is never overridden by the prefix fallback",
+            make_coordinator(
+                hass, entry, CODE_A, ble_name=NAME_A, autodetect=True
+            )._match_ble_device([advert("opener_zzzz", "AA:01")])  # noqa: SLF001
+            is None,
         )
 
         # _find_ble_device wires the above to the bluetooth helper, and logs.
@@ -137,11 +176,11 @@ async def main() -> None:
         original = coordinator_module.bluetooth.async_discovered_service_info
         coordinator_module.bluetooth.async_discovered_service_info = fake_discovered
         try:
-            discovered = [advert("opener_6677", "AA:01")]
-            found = multi_a._find_ble_device()  # noqa: SLF001
+            discovered = [advert(NAME_A, ADDRESS_A)]
+            found = named_a._find_ble_device()  # noqa: SLF001
             check(
                 "_find_ble_device returns the identified peripheral",
-                found is not None and found.address == "AA:01",
+                found is not None and found.address == ADDRESS_A,
             )
             discovered = [advert("opener_zzzz", "AA:09")]
             check(

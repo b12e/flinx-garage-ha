@@ -82,9 +82,17 @@ CONF_DEVICE_CODE = "device_code"
 CONF_DEV_KEY = "dev_key"
 CONF_DOOR_ALIAS = "door_alias"
 CONF_DEVICES = "devices"
-# Optional per-device BLE address. Required to use BLE when more than one door
-# is configured, since nothing in an advertisement identifies the deviceCode.
-CONF_BLE_ADDRESS = "ble_address"
+# The opener's BLE local name as the cloud API reports it. This is what pins a
+# door to one peripheral, which is what makes BLE safe to use when more than one
+# door is configured.
+CONF_BLE_NAME = "ble_name"
+
+# queryDevice and deviceInfo both report the opener's BLE local name here, as
+# "<prefix>_<MAC without separators>" (e.g. Noru_9C9E6E09CAFC). Their
+# bluetoothMac/bluetoothUuid fields are the iOS CoreBluetooth peripheral UUID,
+# not a MAC, so they are useless for matching on Home Assistant — the address
+# is recovered from the name instead.
+API_KEY_BLE_NAME = "bluetoothName"
 
 # Fallback name for a door the cloud API didn't give an alias for.
 DEFAULT_DOOR_ALIAS = "F-LINX Garage Door"

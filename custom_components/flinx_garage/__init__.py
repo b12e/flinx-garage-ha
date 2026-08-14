@@ -13,7 +13,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .account import FlinxAccount
 from .const import (
-    CONF_BLE_ADDRESS,
+    CONF_BLE_NAME,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
@@ -48,7 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             device_code=device[CONF_DEVICE_CODE],
             dev_key=device[CONF_DEV_KEY],
             door_alias=device.get(CONF_DOOR_ALIAS) or DEFAULT_DOOR_ALIAS,
-            ble_address=device.get(CONF_BLE_ADDRESS),
+            ble_name=device.get(CONF_BLE_NAME),
             # With one door configured, an unbound Noru_*/opener_* advert can
             # only be that door. With more, guessing risks commanding another.
             ble_autodetect=len(devices) == 1,

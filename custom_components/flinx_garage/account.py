@@ -103,13 +103,21 @@ class FlinxAccount:
             _LOGGER.debug("queryDevice rejected: %s", data)
             return None
 
-        return [
+        devices = [
             device
             for device in data.get("data") or []
             if isinstance(device, dict)
             and device.get("deviceCode")
             and device.get("devKey")
         ]
+        # Field names only, never values: this is how the key carrying the
+        # opener's BLE name/MAC gets confirmed from a real account.
+        _LOGGER.debug(
+            "queryDevice returned %d device(s) with fields: %s",
+            len(devices),
+            sorted({key for device in devices for key in device}),
+        )
+        return devices
 
     async def _request_token(self, session: aiohttp.ClientSession) -> str | None:
         url = f"{API_BASE_URL}/app/user/login"

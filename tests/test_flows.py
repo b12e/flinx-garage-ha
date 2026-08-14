@@ -11,6 +11,7 @@ from .harness import (  # noqa: F401 — .harness installs the import stubs
     CODE_A,
     CODE_B,
     add_entry,
+    advert,
     check,
     test_hass,
 )
@@ -24,7 +25,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from custom_components.flinx_garage import config_flow as flow_module
 from custom_components.flinx_garage.account import CannotConnect, FlinxAccount
 from custom_components.flinx_garage.const import (
-    CONF_BLE_ADDRESS,
+    CONF_BLE_NAME,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
@@ -32,9 +33,14 @@ from custom_components.flinx_garage.const import (
     DOMAIN,
 )
 
-# Devices as /device/queryDevice returns them.
+# Devices as /device/queryDevice returns them (trimmed to the fields used).
 API_DEVICES = [
-    {"deviceCode": CODE_A, "devKey": "ab" * 16, "doorAlias": "Garage"},
+    {
+        "deviceCode": CODE_A,
+        "devKey": "ab" * 16,
+        "doorAlias": "Garage",
+        "bluetoothName": "Noru_9C9E6E09CAFC",
+    },
     {"deviceCode": CODE_B, "devKey": "cd" * 16, "doorAlias": "Carport"},
 ]
 
@@ -150,8 +156,8 @@ async def options_devices_checks(hass, entry) -> None:
     flow = options_flow(hass, entry)
     menu = await flow.async_step_init()
     check(
-        "menu offers all three steps",
-        menu["menu_options"] == ["poll_interval", "devices", "bluetooth"],
+        "menu offers both steps",
+        menu["menu_options"] == ["poll_interval", "devices"],
         str(menu["menu_options"]),
     )
 
@@ -179,8 +185,8 @@ async def options_devices_checks(hass, entry) -> None:
     codes = [d[CONF_DEVICE_CODE] for d in entry.data[CONF_DEVICES]]
     check("entry keeps only the selected door", codes == [CODE_A], str(codes))
     check(
-        "kept door keeps its BLE binding",
-        entry.data[CONF_DEVICES][0].get(CONF_BLE_ADDRESS) == "AA:BB:CC:DD:EE:FF",
+        "the door's reported opener is stored",
+        entry.data[CONF_DEVICES][0].get(CONF_BLE_NAME) == "Noru_9C9E6E09CAFC",
         str(entry.data[CONF_DEVICES][0]),
     )
     check(
@@ -220,41 +226,32 @@ async def options_devices_checks(hass, entry) -> None:
     )
 
 
-async def options_bluetooth_checks(hass, entry) -> None:
-    print("\n== options: bluetooth ==")
-    flow = options_flow(hass, entry)
-    form = await flow.async_step_bluetooth()
-    fields = list(form["data_schema"].schema)
+async def discovery_checks(hass, entry) -> None:
+    """Bluetooth discovery offers setup, and shuts up once an account exists."""
+    print("\n== config flow: bluetooth discovery ==")
+    discovery = advert("Noru_9C9E6E09CAFC", "9C:9E:6E:09:CA:FC")
+
+    flow = config_flow(hass)
+    configured = await flow.async_step_bluetooth(discovery)
     check(
-        "one field per configured door",
-        [str(field) for field in fields] == [f"Garage ({CODE_A})"],
-        str([str(field) for field in fields]),
-    )
-    values = [
-        option["value"]
-        for option in form["data_schema"].schema[fields[0]].config["options"]
-    ]
-    check(
-        "cloud-only plus the bound address are offered",
-        values == [flow_module.BLE_ADDRESS_NONE, "AA:BB:CC:DD:EE:FF"],
-        str(values),
+        "discovery aborts once an account is configured",
+        configured["type"] == "abort" and configured["reason"] == "already_configured",
+        str(configured.get("reason")),
     )
 
-    cleared = await flow.async_step_bluetooth(
-        {f"Garage ({CODE_A})": flow_module.BLE_ADDRESS_NONE}
-    )
-    check("step finishes", cleared["type"] == "create_entry")
+    # With no entry, discovery should route into the credentials step.
+    hass.config_entries._entries.pop(entry.entry_id)  # noqa: SLF001
+    flow = config_flow(hass)
+    offered = await flow.async_step_bluetooth(discovery)
     check(
-        "binding cleared",
-        CONF_BLE_ADDRESS not in entry.data[CONF_DEVICES][0],
-        str(entry.data[CONF_DEVICES][0]),
+        "discovery offers the credentials form",
+        offered["type"] == "form" and offered["step_id"] == "user",
+        str(offered.get("step_id")),
     )
-
-    await flow.async_step_bluetooth({f"Garage ({CODE_A})": "11:22:33:44:55:66"})
     check(
-        "binding stored",
-        entry.data[CONF_DEVICES][0].get(CONF_BLE_ADDRESS) == "11:22:33:44:55:66",
-        str(entry.data[CONF_DEVICES][0]),
+        "the card is labelled with the opener",
+        flow.context["title_placeholders"] == {"name": "Noru_9C9E6E09CAFC"},
+        str(flow.context.get("title_placeholders")),
     )
 
 
@@ -272,7 +269,7 @@ async def main() -> None:
                         CONF_DEVICE_CODE: CODE_A,
                         CONF_DEV_KEY: "ab" * 16,
                         CONF_DOOR_ALIAS: "Garage",
-                        CONF_BLE_ADDRESS: "AA:BB:CC:DD:EE:FF",
+                        CONF_BLE_NAME: "Noru_9C9E6E09CAFC",
                     },
                     {
                         CONF_DEVICE_CODE: CODE_B,
@@ -286,7 +283,7 @@ async def main() -> None:
             unique_id="user@example.com",
         )
         await options_devices_checks(hass, entry)
-        await options_bluetooth_checks(hass, entry)
+        await discovery_checks(hass, entry)
 
 
 if __name__ == "__main__":

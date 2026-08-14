@@ -1,6 +1,14 @@
 {
   "domain": "flinx_garage",
   "name": "F-LINX Garage Door",
+  "bluetooth": [
+    {
+      "local_name": "Noru_*"
+    },
+    {
+      "local_name": "opener_*"
+    }
+  ],
   "codeowners": ["@b12e"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],

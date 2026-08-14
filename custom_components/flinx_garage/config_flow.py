@@ -23,8 +23,8 @@ from homeassistant.helpers.selector import (
 
 from .account import CannotConnect, FlinxAccount
 from .const import (
-    BLE_NAME_PREFIXES,
-    CONF_BLE_ADDRESS,
+    API_KEY_BLE_NAME,
+    CONF_BLE_NAME,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
@@ -45,9 +45,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
     }
 )
-
-# Selector value standing for "don't use Bluetooth for this door".
-BLE_ADDRESS_NONE = "none"
 
 
 def _poll_interval_label(seconds: int) -> str:
@@ -81,25 +78,23 @@ def _devices_selector(options: list[SelectOptionDict]) -> SelectSelector:
 
 
 def _entry_devices(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert cloud API devices into the entry's device format."""
-    return [
-        {
+    """Convert cloud API devices into the entry's device format.
+
+    The API reports each door's opener under `bluetoothName`, which is what
+    lets a door be matched to one peripheral instead of any nearby opener.
+    """
+    entry_devices = []
+    for device in devices:
+        entry_device = {
             CONF_DEVICE_CODE: device["deviceCode"],
             CONF_DEV_KEY: device["devKey"],
             CONF_DOOR_ALIAS: device.get("doorAlias") or DEFAULT_DOOR_ALIAS,
         }
-        for device in devices
-    ]
-
-
-def _door_field(device: dict[str, Any]) -> str:
-    """Form field key for one configured door.
-
-    Dynamic field keys have no translation, so the frontend renders the key
-    itself — which is why this reads as a label.
-    """
-    alias = device.get(CONF_DOOR_ALIAS) or DEFAULT_DOOR_ALIAS
-    return f"{alias} ({device[CONF_DEVICE_CODE]})"
+        ble_name = device.get(API_KEY_BLE_NAME)
+        if isinstance(ble_name, str) and ble_name.strip():
+            entry_device[CONF_BLE_NAME] = ble_name.strip()
+        entry_devices.append(entry_device)
+    return entry_devices
 
 
 class FlinxGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -119,6 +114,29 @@ class FlinxGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._username: str | None = None
         self._password: str | None = None
         self._devices: list[dict[str, Any]] = []
+
+    async def async_step_bluetooth(
+        self, discovery_info: bluetooth.BluetoothServiceInfoBleak
+    ) -> FlowResult:
+        """Handle an opener seen over Bluetooth.
+
+        Setup needs cloud credentials either way, so discovery only labels the
+        card with the opener's name and hands over to the credentials step. One
+        account covers every door on it, so once an entry exists — or a flow is
+        already running — further discoveries are dropped.
+        """
+        _LOGGER.debug(
+            "Bluetooth discovery: %s (%s)", discovery_info.name, discovery_info.address
+        )
+        if self._async_current_entries():
+            return self.async_abort(reason="already_configured")
+        if self._async_in_progress():
+            return self.async_abort(reason="already_in_progress")
+
+        self.context["title_placeholders"] = {
+            "name": discovery_info.name or "F-LINX opener"
+        }
+        return await self.async_step_user()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -197,7 +215,7 @@ class FlinxGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
-    """F-LINX options: periodic cloud poll, which doors, Bluetooth binding."""
+    """F-LINX options: the periodic cloud poll, and which doors are configured."""
 
     def __init__(self) -> None:
         self._account_devices: list[dict[str, Any]] = []
@@ -208,7 +226,7 @@ class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
         """Choose which aspect of the integration to configure."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["poll_interval", "devices", "bluetooth"],
+            menu_options=["poll_interval", "devices"],
         )
 
     # -----------------------------------------------------------------
@@ -333,13 +351,7 @@ class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
         entry = self.config_entry
         configured = {d[CONF_DEVICE_CODE]: d for d in entry.data[CONF_DEVICES]}
 
-        devices = []
-        for device in _entry_devices(selected):
-            # Keep a door's bound BLE address across a re-selection.
-            previous = configured.get(device[CONF_DEVICE_CODE], {})
-            if address := previous.get(CONF_BLE_ADDRESS):
-                device[CONF_BLE_ADDRESS] = address
-            devices.append(device)
+        devices = _entry_devices(selected)
 
         device_registry = dr.async_get(self.hass)
         for code in set(configured) - {d[CONF_DEVICE_CODE] for d in devices}:
@@ -357,87 +369,3 @@ class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
             entry, data={**entry.data, CONF_DEVICES: devices}
         )
         return self.async_create_entry(title="", data=dict(entry.options))
-
-    # -----------------------------------------------------------------
-    # Bluetooth binding
-    # -----------------------------------------------------------------
-
-    async def async_step_bluetooth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Bind each door to a specific BLE peripheral.
-
-        Advertisements carry nothing that identifies a device code, so with more
-        than one door the coordinator refuses to guess which peripheral is which
-        (it would end up writing frames built from another door's key). This is
-        where that mapping is made.
-        """
-        entry = self.config_entry
-        configured = entry.data[CONF_DEVICES]
-
-        if user_input is not None:
-            devices = []
-            for device in configured:
-                address = user_input.get(_door_field(device), BLE_ADDRESS_NONE)
-                updated = {
-                    key: value
-                    for key, value in device.items()
-                    if key != CONF_BLE_ADDRESS
-                }
-                if address != BLE_ADDRESS_NONE:
-                    updated[CONF_BLE_ADDRESS] = address
-                devices.append(updated)
-
-            self.hass.config_entries.async_update_entry(
-                entry, data={**entry.data, CONF_DEVICES: devices}
-            )
-            return self.async_create_entry(title="", data=dict(entry.options))
-
-        return self.async_show_form(
-            step_id="bluetooth",
-            data_schema=self._bluetooth_schema(configured),
-        )
-
-    def _bluetooth_schema(self, configured: list[dict[str, Any]]) -> vol.Schema:
-        discovered = []
-        # The bluetooth integration is only set up when the host has an adapter
-        # (or a proxy), and this form has to work either way.
-        if "bluetooth" in self.hass.config.components:
-            discovered = [
-                service_info
-                for service_info in bluetooth.async_discovered_service_info(
-                    self.hass, connectable=True
-                )
-                if service_info.name
-                and service_info.name.startswith(BLE_NAME_PREFIXES)
-            ]
-
-        schema: dict[Any, Any] = {}
-        for device in configured:
-            current = device.get(CONF_BLE_ADDRESS)
-            options = [
-                SelectOptionDict(
-                    value=BLE_ADDRESS_NONE, label="Cloud only (no Bluetooth)"
-                ),
-                *(
-                    SelectOptionDict(
-                        value=service_info.address,
-                        label=f"{service_info.name} ({service_info.address})",
-                    )
-                    for service_info in discovered
-                ),
-            ]
-            # Keep an already-bound address selectable even when it isn't
-            # advertising right now, so opening this form can't silently unbind.
-            if current and all(option["value"] != current for option in options):
-                options.append(
-                    SelectOptionDict(value=current, label=f"{current} (not seen now)")
-                )
-
-            schema[
-                vol.Required(_door_field(device), default=current or BLE_ADDRESS_NONE)
-            ] = SelectSelector(
-                SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
-            )
-
-        return vol.Schema(schema)

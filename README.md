@@ -23,7 +23,7 @@ One integration entry covers one F-LinX account, with all of its doors. Add or r
 
 ### Bluetooth with more than one door
 
-A Bluetooth advertisement doesn't say which door it belongs to. With a single door that's fine, since any `Noru_*` / `opener_*` opener in range must be it. With several, the integration only uses Bluetooth for a door it can identify: either the opener's name ends in that door's device code, or you point the door at its opener under **Configure → Bluetooth**. Unidentified doors use the cloud, rather than risk sending a command to the wrong door.
+Your account reports which opener belongs to each door, so each door only ever talks to its own opener. With a single door configured, any `Noru_*` / `opener_*` opener in range is used. If a door has no opener reported and more than one door is configured, that door uses the cloud rather than risk sending a command to the wrong door.
 
 ### Set position (partial open)
 

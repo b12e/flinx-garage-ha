@@ -25,7 +25,8 @@
       "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "Account is already configured"
+      "already_configured": "Account is already configured",
+      "already_in_progress": "Setup is already in progress"
     }
   },
   "options": {
@@ -35,8 +36,7 @@
         "description": "Choose what to configure.",
         "menu_options": {
           "poll_interval": "Periodic cloud poll",
-          "devices": "Manage devices",
-          "bluetooth": "Bluetooth"
+          "devices": "Manage devices"
         }
       },
       "poll_interval": {
@@ -52,10 +52,6 @@
         "data": {
           "devices": "Devices"
         }
-      },
-      "bluetooth": {
-        "title": "Bluetooth",
-        "description": "Commands are sent over Bluetooth first and fall back to the cloud. A Bluetooth advertisement doesn't say which door it belongs to, so with more than one door each has to be pointed at its own opener — otherwise that door stays cloud-only. Pick the opener for each door below."
       }
     },
     "error": {
