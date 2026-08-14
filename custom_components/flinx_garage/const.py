@@ -89,6 +89,13 @@ POSITION_LEAD_TIME = 1.3  # s
 POSITION_LEAD_TIME_LOCAL = 0.4  # s
 # How recently a BLE report must have arrived to count as the live source.
 POSITION_LOCAL_MAX_AGE = 4  # s
+# The REST snapshot carries no timestamp, so its age is unknowable — it has been
+# seen a minute behind. It is only believed when nothing timestamped has been
+# heard for this long, i.e. when it is all we have.
+CLOUD_POSITION_TRUST_AFTER = 30  # s
+# An MQTT report's own timestamp is trusted only if it is anywhere near the
+# clock; outside this it is treated as undated, like the REST snapshot.
+REPORT_TS_SANITY = 600  # s
 # Drive passes allowed per set_position request: one to get there, one to correct
 # an overshoot. Bounded so a door that can't hold position doesn't hunt forever.
 POSITION_MAX_PASSES = 2

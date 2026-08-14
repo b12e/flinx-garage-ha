@@ -49,6 +49,7 @@ from .const import (
     CLOUD_CMD_OPEN,
     CLOUD_CMD_STOP,
     CLOUD_GATEWAY_URL,
+    CLOUD_POSITION_TRUST_AFTER,
     DEFAULT_FALLBACK_SCAN_INTERVAL,
     DOOR_STATE_CLOSED,
     DOOR_STATE_OPEN,
@@ -62,6 +63,7 @@ from .const import (
     POSITION_SETTLE,
     POSITION_TIMEOUT,
     POSITION_TOLERANCE,
+    REPORT_TS_SANITY,
 )
 from .account import FlinxAccount
 from .crypto import (
@@ -151,7 +153,11 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # State surface
         self.door_position: int | None = None      # 0–100
         self.position_source: str | None = None    # "MQTT", "BLE" or "cloud"
-        self.position_updated_at: float = 0.0      # loop clock
+        self.position_updated_at: float = 0.0      # loop clock, when it arrived
+        # Epoch second the applied position describes — not when it arrived. MQTT
+        # has been seen delivering reports 26s after the moment they describe, so
+        # ordering by arrival lets an old position overwrite a newer one.
+        self._position_ts: float = 0.0
         self.led_state: bool | None = None         # True=on, False=off
         self.operated_cycles: int | None = None
         self.is_ble_connected: bool = False
@@ -192,12 +198,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         changed = False
 
         pos = attrs.get(ATTR_DOOR_POSITION)
-        if pos is not None:
+        measured_at = self._report_ts(attrs, source)
+        if pos is not None and self._accept_position(pos, source, measured_at):
             # Record freshness even when the value is unchanged: the positioning
             # loop needs to know how current its reading is, not just that it
             # differs from last time.
             self.position_updated_at = self.hass.loop.time()
             self.position_source = source
+            self._position_ts = measured_at or time.time()
             if pos != self.door_position:
                 self.door_position = pos
                 changed = True
@@ -227,6 +235,60 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             )
             # Push the new state to entities
             self.async_set_updated_data(self._build_state())
+
+    @staticmethod
+    def _report_ts(attrs: dict[int, Any], source: str) -> float | None:
+        """Epoch second an attribute report describes, or None if undated.
+
+        A BLE reply carries no timestamp but arrives within milliseconds of the
+        controller producing it, so its age is nil. An MQTT report carries the
+        controller's own timestamp; without a usable one there is no way to order
+        it against anything, so it counts as undated.
+        """
+        if source == "BLE":
+            return time.time()
+        reported = attrs.get("_ts")
+        if reported is None:
+            return None
+        if abs(time.time() - reported) > REPORT_TS_SANITY:
+            # A controller clock this far out tells us nothing about ordering.
+            _LOGGER.debug("Report timestamp %s is implausible; treating as undated", reported)
+            return None
+        return float(reported)
+
+    @callback
+    def _accept_position(
+        self, position: int, source: str, measured_at: float | None
+    ) -> bool:
+        """Whether a position report should be believed, by age not arrival.
+
+        MQTT delivers a report describing the door as it was up to half a minute
+        earlier, so ordering by arrival lets a position from the middle of a
+        movement land after the position the door finished at — the state jumps
+        backwards and the direction inverts with it. Reports are therefore
+        ordered by the moment they describe. The REST snapshot is undated and has
+        been seen a minute behind, so it is only believed when nothing dated has
+        been heard for a while — which is still what surfaces an operation done
+        from the app or a remote.
+        """
+        if measured_at is None:
+            age = time.time() - self._position_ts
+            if age >= CLOUD_POSITION_TRUST_AFTER:
+                return True
+            _LOGGER.debug(
+                "Ignoring undated %s position %s%%: a dated report landed %.0fs ago",
+                source, position, age,
+            )
+            return False
+
+        if measured_at >= self._position_ts:
+            return True
+
+        _LOGGER.debug(
+            "Ignoring %s position %s%%: it describes %.0fs before the %s%% we have",
+            source, position, self._position_ts - measured_at, self.door_position,
+        )
+        return False
 
     @callback
     def position_is_local(self) -> bool:
@@ -782,6 +844,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         try:
             for _ in range(10):
                 await asyncio.sleep(2)
+                if self.position_is_local():
+                    # BLE is streaming the position; the cloud can only be
+                    # staler, so there is nothing to converge.
+                    return
                 info = await self._async_fetch_device_info()
                 if info is None:
                     continue
@@ -904,9 +970,16 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         for attr in info.get("attributes", []):
             code = attr.get("attributeCode")
             value = attr.get("attributeValue")
-            if code == ATTR_DOOR_POSITION and value != self.door_position:
-                self.door_position = value
-                changed = True
+            if code == ATTR_DOOR_POSITION:
+                # The REST snapshot carries no timestamp of its own.
+                if not self._accept_position(value, "cloud", None):
+                    continue
+                self.position_updated_at = self.hass.loop.time()
+                self.position_source = "cloud"
+                self._position_ts = time.time()
+                if value != self.door_position:
+                    self.door_position = value
+                    changed = True
             elif code == ATTR_OPERATED_CYCLES and value != self.operated_cycles:
                 self.operated_cycles = value
                 changed = True
