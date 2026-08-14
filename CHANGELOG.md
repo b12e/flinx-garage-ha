@@ -3,6 +3,8 @@
 ## 3.0.0
 
 ### Added
+- **Local state over Bluetooth** - the controller's reply to every Bluetooth command carries the same attribute report MQTT sends, so door position, LED and the cycle counter now update from Bluetooth as well. State no longer depends on the controller's WiFi holding up: when it drops off, MQTT and the cloud both go quiet, and previously the door could sit at 17% while Home Assistant still said "Closed" for the best part of a minute.
+- **Set position uses those replies too** - the positioning loop reads the live local position while the door moves, leads the stop by 0.4s instead of 1.3s when readings are local, and corrects once if the door didn't land within tolerance. The stop's own reply reports where it settled.
 - **Account-based setup** - log in once; all devices on your account are listed and added in a single integration entry.
 - **Single API session** - all devices now share one Bit Door session, allowing multiple devices to work using the same account.
 - **Manage devices** option - add or remove doors later without re-adding the integration.

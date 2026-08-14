@@ -55,7 +55,11 @@ from .const import (
     DOMAIN,
     MQTT_STALE_THRESHOLD,
     POSITION_LEAD_TIME,
+    POSITION_LEAD_TIME_LOCAL,
+    POSITION_LOCAL_MAX_AGE,
+    POSITION_MAX_PASSES,
     POSITION_POLL,
+    POSITION_SETTLE,
     POSITION_TIMEOUT,
     POSITION_TOLERANCE,
 )
@@ -68,8 +72,9 @@ from .crypto import (
     BLE_CMD_STOP,
     build_ble_auth,
     build_ble_command,
+    unwrap_ble_frame,
 )
-from .mqtt_client import FlinxMqttClient
+from .mqtt_client import FlinxMqttClient, parse_attr_report
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -140,8 +145,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._post_command_refresh: asyncio.Task[None] | None = None
         self._position_task: asyncio.Task[None] | None = None
 
+        # Reassembly buffer for a notification split across MTU-sized chunks.
+        self._ble_frame = bytearray()
+
         # State surface
         self.door_position: int | None = None      # 0–100
+        self.position_source: str | None = None    # "MQTT", "BLE" or "cloud"
+        self.position_updated_at: float = 0.0      # loop clock
         self.led_state: bool | None = None         # True=on, False=off
         self.operated_cycles: int | None = None
         self.is_ble_connected: bool = False
@@ -168,17 +178,29 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         return self._door_alias
 
     # -----------------------------------------------------------------
-    # MQTT inbound
+    # Inbound state (MQTT attr/up and BLE command replies share a format)
     # -----------------------------------------------------------------
 
     async def _on_mqtt_attrs(self, attrs: dict[int, Any]) -> None:
         """Called from the MQTT client when an attr/up message arrives."""
+        self.last_mqtt_ts = self.mqtt.last_message_ts
+        self._apply_attrs(attrs, source="MQTT")
+
+    @callback
+    def _apply_attrs(self, attrs: dict[int, Any], source: str = "BLE") -> None:
+        """Fold a decoded attribute report into the state surface."""
         changed = False
 
         pos = attrs.get(ATTR_DOOR_POSITION)
-        if pos is not None and pos != self.door_position:
-            self.door_position = pos
-            changed = True
+        if pos is not None:
+            # Record freshness even when the value is unchanged: the positioning
+            # loop needs to know how current its reading is, not just that it
+            # differs from last time.
+            self.position_updated_at = self.hass.loop.time()
+            self.position_source = source
+            if pos != self.door_position:
+                self.door_position = pos
+                changed = True
 
         led_raw = attrs.get(ATTR_LED_ACTUAL)
         if led_raw is not None:
@@ -193,18 +215,31 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self.operated_cycles = cycles
             changed = True
 
-        self.last_mqtt_ts = self.mqtt.last_message_ts
         self.is_online = True
 
         if changed:
             _LOGGER.debug(
-                "MQTT state update: pos=%s led=%s cycles=%s",
+                "%s state update: pos=%s led=%s cycles=%s",
+                source,
                 self.door_position,
                 self.led_state,
                 self.operated_cycles,
             )
             # Push the new state to entities
             self.async_set_updated_data(self._build_state())
+
+    @callback
+    def position_is_local(self) -> bool:
+        """True when the live position is coming from BLE right now.
+
+        A BLE reply lands within milliseconds of the door reporting, so the
+        positioning loop can lead the stop by much less than it must when it is
+        working from MQTT's several-second cadence.
+        """
+        return (
+            self.position_source == "BLE"
+            and self.hass.loop.time() - self.position_updated_at < POSITION_LOCAL_MAX_AGE
+        )
 
     def _build_state(self) -> dict[str, Any]:
         return {
@@ -224,6 +259,27 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     @callback
     def _ble_notification(self, sender: int, data: bytes) -> None:
         self._last_notification = data
+
+        # The reply to a command carries a full attribute report — the same TLVs
+        # MQTT delivers — so BLE is a state source too, and a local one: this
+        # arrives while the door is moving, whereas MQTT and the cloud go quiet
+        # whenever the controller drops off WiFi.
+        frame = bytes(data)
+        if frame[:2] == b"\x55\x55":
+            self._ble_frame = bytearray(frame)
+        elif self._ble_frame:
+            # A notification can be split across chunks by the MTU.
+            self._ble_frame += frame
+        else:
+            return
+
+        plaintext = unwrap_ble_frame(bytes(self._ble_frame), bytes.fromhex(self._dev_key))
+        if plaintext is None:
+            return
+        self._ble_frame.clear()
+        if attrs := parse_attr_report(plaintext):
+            _LOGGER.debug("BLE attr report: %s", attrs)
+            self._apply_attrs(attrs)
 
     async def _ensure_ble_connected(self) -> bool:
         if self._closing:
@@ -553,67 +609,100 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # Supersede any in-flight positioning, then drive to the new target.
         self._cancel_position_task()
         self._position_task = self.hass.async_create_task(
-            self._run_to_position(target, current)
+            self._drive_to_position(target)
         )
         return True
 
-    async def _run_to_position(self, target: int, start: int) -> None:
-        """Open/close toward target and STOP when live position reaches it."""
-        opening = target > start
+    async def _drive_to_position(self, target: int) -> None:
+        """Drive to target, correcting once if the door didn't land close enough.
+
+        The STOP command's own BLE reply carries the settled position, so the
+        landing spot is known within milliseconds instead of whenever MQTT next
+        reports — which is what makes a correction pass worth doing at all.
+        """
         try:
-            ok = await self._send_command(
-                BLE_CMD_OPEN if opening else BLE_CMD_CLOSE,
-                CLOUD_CMD_OPEN if opening else CLOUD_CMD_CLOSE,
-                target_position=None,
-            )
-            if not ok:
-                _LOGGER.warning("Set position: failed to start movement toward %s%%", target)
-                return
-
-            # Predictive stop: the door coasts after STOP, so estimate its speed
-            # from the live position stream and stop once the *projected* landing
-            # spot (pos + speed x POSITION_LEAD_TIME) reaches the target.
-            last_pos = start
-            last_t = self.hass.loop.time()
-            speed = 0.0  # %/s magnitude; smoothed
-            deadline = last_t + POSITION_TIMEOUT
-            while self.hass.loop.time() < deadline:
-                await asyncio.sleep(POSITION_POLL)
-                pos = self.door_position
-                now = self.hass.loop.time()
-                if pos is None:
-                    continue
-                if pos != last_pos:
-                    dt = now - last_t
-                    if dt > 0:
-                        inst = abs(pos - last_pos) / dt
-                        # EMA-smooth; seed on the first observed movement.
-                        speed = inst if speed == 0 else 0.6 * speed + 0.4 * inst
-                    last_pos = pos
-                    last_t = now
-                lead = speed * POSITION_LEAD_TIME
-                projected = pos + lead if opening else pos - lead
-                if (opening and projected >= target) or (
-                    not opening and projected <= target
-                ):
-                    break
-            else:
-                _LOGGER.warning("Set position: timed out before reaching %s%%", target)
-
-            await self._send_command(
-                BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=target
-            )
-            landing = last_pos + (speed * POSITION_LEAD_TIME if opening else -speed * POSITION_LEAD_TIME)
-            _LOGGER.debug(
-                "Set position: target %s%%, stop issued at pos=%s speed=%.1f%%/s "
-                "(projected ~%s%%, lead %.1fs)",
-                target, last_pos, speed, round(landing), POSITION_LEAD_TIME,
-            )
+            for attempt in range(POSITION_MAX_PASSES):
+                current = self.door_position
+                if current is None:
+                    _LOGGER.warning("Set position: position unknown, giving up")
+                    return
+                if abs(current - target) <= POSITION_TOLERANCE:
+                    if attempt:
+                        _LOGGER.debug(
+                            "Set position: landed at %s%% (target %s%%)", current, target
+                        )
+                    return
+                if attempt:
+                    _LOGGER.debug(
+                        "Set position: at %s%%, correcting toward %s%%", current, target
+                    )
+                await self._run_to_position(target, current)
+                # Let the stop's reply (and any trailing report) land.
+                await asyncio.sleep(POSITION_SETTLE)
         except asyncio.CancelledError:
             raise
         finally:
             if asyncio.current_task() is self._position_task:
                 self._position_task = None
+
+    async def _run_to_position(self, target: int, start: int) -> None:
+        """Open/close toward target and STOP when live position reaches it."""
+        opening = target > start
+        ok = await self._send_command(
+            BLE_CMD_OPEN if opening else BLE_CMD_CLOSE,
+            CLOUD_CMD_OPEN if opening else CLOUD_CMD_CLOSE,
+            target_position=None,
+        )
+        if not ok:
+            _LOGGER.warning("Set position: failed to start movement toward %s%%", target)
+            return
+
+        # Predictive stop: the door coasts after STOP, so estimate its speed from
+        # the live position stream and stop once the *projected* landing spot
+        # (pos + speed x lead) reaches the target. How far ahead to lead depends
+        # on where the readings come from: a BLE reply is near-instant, while
+        # MQTT's cadence means the door has already moved on by the time we see a
+        # value, so it needs a much bigger lead.
+        last_pos = start
+        last_t = self.hass.loop.time()
+        speed = 0.0  # %/s magnitude; smoothed
+        lead_time = POSITION_LEAD_TIME
+        deadline = last_t + POSITION_TIMEOUT
+        while self.hass.loop.time() < deadline:
+            await asyncio.sleep(POSITION_POLL)
+            pos = self.door_position
+            now = self.hass.loop.time()
+            if pos is None:
+                continue
+            if pos != last_pos:
+                dt = now - last_t
+                if dt > 0:
+                    inst = abs(pos - last_pos) / dt
+                    # EMA-smooth; seed on the first observed movement.
+                    speed = inst if speed == 0 else 0.6 * speed + 0.4 * inst
+                last_pos = pos
+                last_t = now
+            lead_time = (
+                POSITION_LEAD_TIME_LOCAL
+                if self.position_is_local()
+                else POSITION_LEAD_TIME
+            )
+            lead = speed * lead_time
+            projected = pos + lead if opening else pos - lead
+            if (opening and projected >= target) or (
+                not opening and projected <= target
+            ):
+                break
+        else:
+            _LOGGER.warning("Set position: timed out before reaching %s%%", target)
+
+        await self._send_command(BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=target)
+        landing = last_pos + (speed * lead_time if opening else -speed * lead_time)
+        _LOGGER.debug(
+            "Set position: target %s%%, stop issued at pos=%s speed=%.1f%%/s via %s "
+            "(projected ~%s%%, lead %.1fs)",
+            target, last_pos, speed, self.position_source or "?", round(landing), lead_time,
+        )
 
     @callback
     def _cancel_position_task(self) -> None:

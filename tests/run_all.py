@@ -8,7 +8,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from . import test_ble, test_command_errors, test_flows, test_migration, test_setup
+from . import (
+    test_ble,
+    test_ble_state,
+    test_command_errors,
+    test_flows,
+    test_migration,
+    test_setup,
+)
 from .harness import summary
 
 
@@ -16,6 +23,7 @@ async def main() -> None:
     for module in (
         test_migration,
         test_ble,
+        test_ble_state,
         test_command_errors,
         test_setup,
         test_flows,

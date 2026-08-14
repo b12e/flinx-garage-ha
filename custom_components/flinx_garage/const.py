@@ -83,6 +83,18 @@ POSITION_POLL = 0.25     # s, how often to check live position while moving
 # momentum). We lead the stop by speed x this many seconds so it lands on target
 # instead of overshooting. Tune up if it still overshoots, down if it undershoots.
 POSITION_LEAD_TIME = 1.3  # s
+# A BLE reply reports the position within milliseconds, so when the live reading
+# is local there is far less latency to lead by. Overshoot comes from the motor's
+# own coast, not from waiting on the cloud.
+POSITION_LEAD_TIME_LOCAL = 0.4  # s
+# How recently a BLE report must have arrived to count as the live source.
+POSITION_LOCAL_MAX_AGE = 4  # s
+# Drive passes allowed per set_position request: one to get there, one to correct
+# an overshoot. Bounded so a door that can't hold position doesn't hunt forever.
+POSITION_MAX_PASSES = 2
+# Time for the door to come to rest (and its report to arrive) before judging
+# where it landed.
+POSITION_SETTLE = 2.0  # s
 
 # Config entry format version. Bumped to 3 when the entry moved from one door
 # per entry to one account per entry (see async_migrate_entry in __init__.py).
