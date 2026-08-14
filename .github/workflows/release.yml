@@ -27,6 +27,7 @@ jobs:
         uses: "actions/checkout@v7"
         with:
           ref: main
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Validate version
         id: version
