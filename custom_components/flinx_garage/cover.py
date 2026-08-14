@@ -168,24 +168,27 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         }
 
     async def async_open_cover(self, **kwargs: Any) -> None:
-        if await self.coordinator.async_door_open():
-            self._direction = 1
-            self._last_position_ts = time.monotonic()
-            self._schedule_direction_reset()
-            self.async_write_ha_state()
+        if not await self.coordinator.async_door_open():
+            raise self.coordinator.command_error("open the door")
+        self._direction = 1
+        self._last_position_ts = time.monotonic()
+        self._schedule_direction_reset()
+        self.async_write_ha_state()
 
     async def async_close_cover(self, **kwargs: Any) -> None:
-        if await self.coordinator.async_door_close():
-            self._direction = -1
-            self._last_position_ts = time.monotonic()
-            self._schedule_direction_reset()
-            self.async_write_ha_state()
+        if not await self.coordinator.async_door_close():
+            raise self.coordinator.command_error("close the door")
+        self._direction = -1
+        self._last_position_ts = time.monotonic()
+        self._schedule_direction_reset()
+        self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        if await self.coordinator.async_door_stop():
-            self._direction = 0
-            self._cancel_direction_reset()
-            self.async_write_ha_state()
+        if not await self.coordinator.async_door_stop():
+            raise self.coordinator.command_error("stop the door")
+        self._direction = 0
+        self._cancel_direction_reset()
+        self.async_write_ha_state()
 
     async def async_refresh_state(self) -> None:
         """Force a cloud API state refresh (flinx_garage.refresh_state action)."""
@@ -201,4 +204,5 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
             self._last_position_ts = time.monotonic()
             self._schedule_direction_reset()
             self.async_write_ha_state()
-        await self.coordinator.async_door_set_position(position)
+        if not await self.coordinator.async_door_set_position(position):
+            raise self.coordinator.command_error(f"move the door to {position}%")

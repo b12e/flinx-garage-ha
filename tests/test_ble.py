@@ -143,23 +143,12 @@ async def main() -> None:
             named_a._match_ble_device([advert(NAME_B, ADDRESS_B)]) is None,  # noqa: SLF001
         )
 
-        # A proxy can forward an advertisement with no local name; the address is
-        # recoverable from the reported name.
+        # The MAC in the name is NOT the BLE address (Noru_9C9E6E09CAFC
+        # advertises at ...CA:FE), so an unnamed advertisement is not this door.
         check(
-            "falls back to the address encoded in the reported name",
-            (m := named_a._match_ble_device([advert(None, ADDRESS_A)])) is not None  # noqa: SLF001
-            and m.address == ADDRESS_A,
+            "an unnamed advertisement is never assumed to be this door",
+            named_a._match_ble_device([advert(None, ADDRESS_A)]) is None,  # noqa: SLF001
         )
-        check(
-            "address recovered from a reported name",
-            coordinator_module.address_from_ble_name(NAME_A) == ADDRESS_A,
-            coordinator_module.address_from_ble_name(NAME_A),
-        )
-        for bad in ("Noru_9C9E", "opener_ZZZZZZZZZZZZ", "Noru", ""):
-            check(
-                f"no address recovered from {bad!r}",
-                coordinator_module.address_from_ble_name(bad) is None,
-            )
 
         # deviceInfo also reports the name, so a migrated entry picks it up.
         learned = make_coordinator(hass, entry, CODE_A, autodetect=False)
@@ -172,12 +161,6 @@ async def main() -> None:
             and m.address == ADDRESS_A,
         )
 
-        check(
-            "address matching is case-insensitive",
-            (m := named_a._match_ble_device([advert(None, ADDRESS_A.lower())]))  # noqa: SLF001
-            is not None
-            and m.address == ADDRESS_A.lower(),
-        )
         check(
             "a reported opener that isn't advertising resolves to nothing",
             named_a._match_ble_device([advert(NAME_B, ADDRESS_B)]) is None,  # noqa: SLF001

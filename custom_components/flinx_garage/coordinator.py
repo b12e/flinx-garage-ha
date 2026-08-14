@@ -78,20 +78,10 @@ def _is_flinx_name(name: str | None) -> bool:
     return bool(name) and name.startswith(BLE_NAME_PREFIXES)
 
 
-def address_from_ble_name(name: str | None) -> str | None:
-    """Recover the peripheral address from an opener's local name.
-
-    The cloud API reports names as ``<prefix>_<MAC without separators>``
-    (e.g. ``Noru_9C9E6E09CAFC``), so the address can be read straight out of
-    it — useful because a proxy can pass on an advertisement with no local name
-    at all, while the address is always there.
-    """
-    if not name or "_" not in name:
-        return None
-    tail = name.rsplit("_", 1)[-1]
-    if len(tail) != 12 or any(c not in "0123456789abcdefABCDEF" for c in tail):
-        return None
-    return ":".join(tail[i : i + 2] for i in range(0, 12, 2)).upper()
+# The MAC in an opener's name is NOT its BLE address: Noru_9C9E6E09CAFC
+# advertises at 9C:9E:6E:09:CA:FE. The controller is ESP32-based, and its
+# Bluetooth address is the base MAC plus two, so the name can't be turned into
+# an address to match on — the name itself is the identity.
 
 
 class FlinxGarageCoordinator(DataUpdateCoordinator):
@@ -138,6 +128,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # coordinator competing with its replacement for the proxy's slot.
         self._closing = False
         self._command_lock = asyncio.Lock()
+        # Why the last command didn't reach the door, for the error the entity
+        # raises — "Too frequent operation" and "Device is offline" are things
+        # the user can act on, so they must not be swallowed into a False.
+        self._last_command_error: str | None = None
         self._last_notification: bytes | None = None
         self._post_command_refresh: asyncio.Task[None] | None = None
         self._position_task: asyncio.Task[None] | None = None
@@ -316,8 +310,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         the wrong peripheral would mean writing frames built from another door's
         devKey. In order of confidence:
 
-        1. the opener name the cloud reports for this door (``bluetoothName``),
-           matched on the name itself or on the address embedded in it;
+        1. the opener name the cloud reports for this door (``bluetoothName``);
         2. any Noru_*/opener_* peripheral — but only when this is the one and
            only configured door, where there is nothing to confuse it with.
         """
@@ -331,16 +324,6 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                         si.name, si.address, self._door_alias, si.rssi, si.source,
                     )
                     return si.device
-            # A proxy can forward an advertisement without its local name, so
-            # fall back to the address the name encodes.
-            if (address := address_from_ble_name(self._ble_name)) is not None:
-                match = self._match_address(service_infos, address)
-                if match is not None:
-                    _LOGGER.debug(
-                        "BLE: %s matches the address in %s's opener name (%s)",
-                        address, self._door_alias, self._ble_name,
-                    )
-                return match
             return None
 
         if not self._ble_autodetect:
@@ -354,15 +337,6 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 )
                 return si.device
 
-        return None
-
-    @staticmethod
-    def _match_address(service_infos, address: str):
-        """Return the advertisement with this address, or None."""
-        wanted = address.upper()
-        for si in service_infos:
-            if si.address.upper() == wanted:
-                return si.device
         return None
 
     def _log_no_ble_device(self, connectable: list) -> None:
@@ -445,7 +419,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         (the auth/command format is reverse-engineered). Without an ack we
         return False so the caller falls back to the cloud command.
         """
-        if not self._ble_client or not self._ble_client.is_connected:
+        # Hold onto the client: a disconnect callback or a failing sibling
+        # command can drop self._ble_client while this one waits for the lock.
+        client = self._ble_client
+        if client is None or not client.is_connected:
             # Not connected yet: kick off a connect in the background (so the
             # next command can use BLE) but don't block this one — fall back to
             # cloud immediately. Logs the connect lifecycle on button press.
@@ -460,6 +437,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return False
         dev_key = bytes.fromhex(self._dev_key)
         async with self._command_lock:
+            if client is not self._ble_client:
+                # It was torn down while we queued; the caller uses the cloud.
+                _LOGGER.debug("BLE link replaced while queueing; using cloud")
+                return False
             try:
                 # Clear any stale notification before writing so the ack wait
                 # only sees a response triggered by this command. Auth was sent
@@ -467,7 +448,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 self._last_notification = None
                 cmd_frame = build_ble_command(ble_cmd_id, dev_key)
                 async with asyncio.timeout(BLE_WRITE_TIMEOUT):
-                    await self._ble_client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
+                    await client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
             # Deliberately broad: BLE is the optimisation, the cloud is the
             # fallback, so nothing on this path may fail the user's action. A
             # proxy raises its own transport errors (e.g. aioesphomeapi's
@@ -532,6 +513,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         current = self.door_position
         if current is None:
             _LOGGER.warning("Cannot set position: current door position unknown")
+            self._last_command_error = (
+                "the door's current position is unknown, so there is nothing to "
+                "drive from - wait for a state update, or use open/close"
+            )
             return False
         if abs(current - target) <= POSITION_TOLERANCE:
             _LOGGER.debug("Set position: already at ~%s%% (target %s)", current, target)
@@ -631,6 +616,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         target_position: int | None = None,
     ) -> bool:
         """Send a command via BLE first; fall back to cloud if BLE unavailable."""
+        self._last_command_error = None
         if await self._send_ble_command(ble_cmd_id):
             _LOGGER.debug("BLE command confirmed (ack)")
             self._schedule_post_command_refresh(target_position)
@@ -640,6 +626,18 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         if ok:
             self._schedule_post_command_refresh(target_position)
         return ok
+
+    @callback
+    def command_error(self, action: str) -> HomeAssistantError:
+        """The error to raise when a command didn't reach the door.
+
+        Returning False here would let Home Assistant report the action as
+        successful while the door never moved.
+        """
+        detail = self._last_command_error or (
+            "Bluetooth was unavailable and the cloud API could not be reached"
+        )
+        return HomeAssistantError(f"Could not {action}: {detail}")
 
     @callback
     def _schedule_post_command_refresh(self, target_position: int | None) -> None:
@@ -687,6 +685,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             token = await self._account.async_get_token(session)
             if not token:
                 _LOGGER.error("Cloud command failed: unable to authenticate")
+                self._last_command_error = "could not sign in to the F-LINX cloud"
                 return False
             headers["Authorization"] = f"Bearer {token}"
             try:
@@ -703,16 +702,25 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                             self._account.async_invalidate_token()
                             continue
                         _LOGGER.warning("Cloud command rejected: %s", msg)
+                        # The gateway's own wording is the most useful thing we
+                        # can show ("Too frequent operation", "Device is
+                        # offline"), so pass it straight through.
+                        self._last_command_error = f"the F-LINX cloud said \"{msg}\""
                         return False
                     elif resp.status == 401:
                         self._account.async_invalidate_token()
                         continue
                     else:
                         _LOGGER.warning("Cloud command HTTP %s", resp.status)
+                        self._last_command_error = (
+                            f"the F-LINX cloud returned HTTP {resp.status}"
+                        )
                         return False
             except aiohttp.ClientError as err:
                 _LOGGER.warning("Cloud command error: %s", err)
+                self._last_command_error = f"the F-LINX cloud is unreachable ({err})"
                 return False
+        self._last_command_error = "the F-LINX cloud kept rejecting the session"
         return False
 
     # -----------------------------------------------------------------

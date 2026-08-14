@@ -54,8 +54,10 @@ class FlinxGarageLight(CoordinatorEntity[FlinxGarageCoordinator], LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
-        await self.coordinator.async_led_on()
+        if not await self.coordinator.async_led_on():
+            raise self.coordinator.command_error("turn the light on")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
-        await self.coordinator.async_led_off()
+        if not await self.coordinator.async_led_off():
+            raise self.coordinator.command_error("turn the light off")
