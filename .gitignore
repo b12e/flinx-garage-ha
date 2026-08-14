@@ -6,3 +6,6 @@ venv/
 *.xapk
 *.apk
 *.ipa
+
+# Verification harness, kept local: not part of the integration.
+tests/
