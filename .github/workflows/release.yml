@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without a leading v (e.g. 2.4.1 or 2.5.0b1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  MANIFEST: custom_components/flinx_garage/manifest.json
+
+jobs:
+  release:
+    name: Release
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout
+        uses: "actions/checkout@v7"
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Validate version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$VERSION" == v* ]]; then
+            echo "::error::Pass the version without a leading 'v' (got '$VERSION'). The tag is prefixed automatically."
+            exit 1
+          fi
+
+          # Stable X.Y.Z, or a pre-release suffix such as 2.5.0b1 / 2.5.0rc2.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-z]+[0-9]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a valid version. Expected X.Y.Z or X.Y.Z<suffix><n>, e.g. 2.4.1 or 2.5.0b1."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag v$VERSION already exists."
+            exit 1
+          fi
+
+          # Anything beyond X.Y.Z is a pre-release, matching the repo's bN tags.
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump manifest version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - "$VERSION" "$MANIFEST" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          version, path = sys.argv[1], pathlib.Path(sys.argv[2])
+          text = path.read_text()
+
+          # Patch the value in place rather than re-serialising, so key order and
+          # formatting stay exactly as hassfest expects them.
+          new_text, count = re.subn(
+              r'("version"\s*:\s*")[^"]*(")',
+              lambda m: m.group(1) + version + m.group(2),
+              text,
+              count=1,
+          )
+          if count != 1:
+              sys.exit(f"No version key found in {path}")
+
+          json.loads(new_text)
+          path.write_text(new_text)
+          PY
+
+      - name: Roll CHANGELOG Unreleased section
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if grep -q '^## Unreleased$' CHANGELOG.md; then
+            sed -i "s/^## Unreleased$/## $VERSION/" CHANGELOG.md
+          else
+            echo "No Unreleased section in CHANGELOG.md, leaving it untouched."
+          fi
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "Nothing to commit, manifest is already at $VERSION."
+          else
+            git add "$MANIFEST" CHANGELOG.md
+            git commit -m "Bump version to $VERSION"
+            git push origin main
+          fi
+
+      - name: Create release
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Tag the exact commit this run produced, so a concurrent push to main
+          # cannot retarget the release.
+          args=(--title "v$VERSION" --target "$(git rev-parse HEAD)" --generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "v$VERSION" "${args[@]}"
