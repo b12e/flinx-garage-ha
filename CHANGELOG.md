@@ -5,10 +5,22 @@
 ### Added
 - **Account-based setup** — log in once; all devices on your account are listed and added in a single integration entry.
 - **Single API session** — all devices now share one Bit Door session, allowing multiple devices to work using the same account.
+- **Manage devices** option — add or remove doors later without re-adding the integration.
+- **Bluetooth** option — point each door at its own opener. Needed for local BLE commands once more than one door is configured.
 
 ### Changed
+- Existing setups upgrade in place: pre-3.0 entries are converted to the new account format automatically, keeping their entity IDs, names, areas and history. Two entries for the same account are merged into one.
 - BLE discovery now also matches `opener_*` device names (in addition to `Noru_*`).
-- **Breaking:** existing per-device config entries must be removed and re-added (one login re-adds all devices).
+- Commands only go over Bluetooth to a door the integration can positively identify (a bound address, or an advertised name ending in the device code). With several doors and no binding, that door uses the cloud rather than risk commanding the wrong one.
+- Removed the Bluetooth discovery matchers from the manifest — setup needs account credentials, so the discovery flow they triggered could only fail.
+- Minimum Home Assistant version is now 2025.2.0.
+
+### Fixed
+- The options flow no longer logs in behind the coordinators' back, which revoked the session they were using (the API allows one session per account).
+- Removing a door now removes its device and entities instead of leaving them behind as unavailable.
+- Adding the same account a second time with different capitalisation is now recognised as already configured, instead of creating a duplicate entry whose entities collide.
+- The integration's UI text now actually renders — translations were only in `strings.json`, which Home Assistant reads for core integrations but not for custom ones.
+- Cloud calls reuse Home Assistant's shared HTTP session instead of opening a new one per request, per door.
 
 ## 2.3.0
 

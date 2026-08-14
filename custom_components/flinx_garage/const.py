@@ -71,6 +71,10 @@ POSITION_POLL = 0.25     # s, how often to check live position while moving
 # instead of overshooting. Tune up if it still overshoots, down if it undershoots.
 POSITION_LEAD_TIME = 1.3  # s
 
+# Config entry format version. Bumped to 3 when the entry moved from one door
+# per entry to one account per entry (see async_migrate_entry in __init__.py).
+ENTRY_VERSION = 3
+
 # Config entry keys
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
@@ -78,6 +82,12 @@ CONF_DEVICE_CODE = "device_code"
 CONF_DEV_KEY = "dev_key"
 CONF_DOOR_ALIAS = "door_alias"
 CONF_DEVICES = "devices"
+# Optional per-device BLE address. Required to use BLE when more than one door
+# is configured, since nothing in an advertisement identifies the deviceCode.
+CONF_BLE_ADDRESS = "ble_address"
+
+# Fallback name for a door the cloud API didn't give an alias for.
+DEFAULT_DOOR_ALIAS = "F-LINX Garage Door"
 
 # Options-flow keys
 CONF_POLL_INTERVAL = "poll_interval"

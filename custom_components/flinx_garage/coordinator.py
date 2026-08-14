@@ -21,8 +21,10 @@ from bleak.exc import BleakError
 from bleak_retry_connector import establish_connection
 
 from homeassistant.components import bluetooth
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -69,21 +71,30 @@ from .mqtt_client import FlinxMqttClient
 _LOGGER = logging.getLogger(__name__)
 
 
+def _is_flinx_name(name: str | None) -> bool:
+    """True when a BLE local name looks like an F-LINX door opener."""
+    return bool(name) and name.startswith(BLE_NAME_PREFIXES)
+
+
 class FlinxGarageCoordinator(DataUpdateCoordinator):
     """Hybrid MQTT (state) + BLE (commands) coordinator."""
 
     def __init__(
         self,
         hass: HomeAssistant,
+        config_entry: ConfigEntry,
         account: FlinxAccount,
         device_code: str,
         dev_key: str,
         door_alias: str,
+        ble_address: str | None = None,
+        ble_autodetect: bool = True,
         poll_interval: int = 0,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=DOMAIN,
             # Light polling cadence — MQTT push is primary; polling is a fallback
             # in case MQTT disconnects or we miss messages.
@@ -93,14 +104,19 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._device_code = device_code
         self._dev_key = dev_key
         self._door_alias = door_alias
+        self._ble_address = ble_address
+        self._ble_autodetect = ble_autodetect
         self._poll_interval = poll_interval
         self._poll_unsub: Callable[[], None] | None = None
-        # Warn only once per "seen-but-not-connectable" episode to avoid log spam
-        # (the BLE scan runs on every reconnect/fallback tick).
+        # Warn only once per "BLE unusable" episode to avoid log spam (the BLE
+        # scan runs on every reconnect/fallback tick).
         self._ble_not_connectable_warned = False
 
         self._ble_client: BleakClient | None = None
         self._ble_connecting = False
+        # Set on shutdown so a pending reconnect timer can't have a torn-down
+        # coordinator competing with its replacement for the proxy's slot.
+        self._closing = False
         self._command_lock = asyncio.Lock()
         self._last_notification: bytes | None = None
         self._post_command_refresh: asyncio.Task[None] | None = None
@@ -192,6 +208,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._last_notification = data
 
     async def _ensure_ble_connected(self) -> bool:
+        if self._closing:
+            return False
+
         if self._ble_client and self._ble_client.is_connected:
             return True
 
@@ -255,56 +274,127 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self._ble_connecting = False
 
     def _find_ble_device(self):
-        """Find the F-LINX device among discovered BLE advertisements.
-
-        Logs why no connection is attempted so we can distinguish "device not
-        seen at all", "seen but not connectable" (a passive-only proxy), and
-        "seen and connectable".
-        """
+        """Find *this door's* BLE peripheral among the discovered adverts."""
         connectable = list(
             bluetooth.async_discovered_service_info(self.hass, connectable=True)
         )
-        for si in connectable:
-            if si.name and any(si.name.startswith(p) for p in BLE_NAME_PREFIXES):
+        device = self._match_ble_device(connectable)
+        if device is not None:
+            self._ble_not_connectable_warned = False
+            return device
+
+        self._log_no_ble_device(connectable)
+        return None
+
+    def _match_ble_device(self, service_infos):
+        """Return the advertisement that is certainly this door, or None.
+
+        Resolution is deliberately strict, because an advertisement carries
+        nothing that identifies a deviceCode: with several doors in range,
+        picking the wrong peripheral would mean writing frames built from
+        another door's devKey. In order of confidence:
+
+        1. the address bound to this door in the options flow;
+        2. a local name ending in this door's device code;
+        3. any Noru_*/opener_* peripheral — but only when this is the one and
+           only configured door, where there is nothing to confuse it with.
+        """
+        if self._ble_address:
+            wanted = self._ble_address.upper()
+            for si in service_infos:
+                if si.address.upper() == wanted:
+                    _LOGGER.debug(
+                        "BLE: %s (%s) matches the address bound to %s rssi=%s via %s",
+                        si.name, si.address, self._door_alias, si.rssi, si.source,
+                    )
+                    return si.device
+            return None
+
+        for si in service_infos:
+            if self._name_identifies_device(si.name):
+                _LOGGER.debug(
+                    "BLE: %s (%s) identifies device %s rssi=%s via %s",
+                    si.name, si.address, self._device_code, si.rssi, si.source,
+                )
+                return si.device
+
+        if not self._ble_autodetect:
+            return None
+
+        for si in service_infos:
+            if _is_flinx_name(si.name):
                 _LOGGER.debug(
                     "BLE: found connectable %s (%s) rssi=%s via %s",
                     si.name, si.address, si.rssi, si.source,
                 )
-                self._ble_not_connectable_warned = False
                 return si.device
 
+        return None
+
+    def _name_identifies_device(self, name: str | None) -> bool:
+        """True when a local name ends in a tail of this door's device code.
+
+        The peripherals are named after the device they belong to (Noru_<tail>,
+        opener_<tail>), so a suffix match pins an advert to one deviceCode
+        without the user having to bind an address by hand. At least 4 hex
+        characters are required so the match can't be a coincidence.
+        """
+        if not _is_flinx_name(name):
+            return False
+        suffix = name.rsplit("_", 1)[-1].lower()
+        if len(suffix) < 4 or any(c not in "0123456789abcdef" for c in suffix):
+            return False
+        return self._device_code.lower().endswith(suffix)
+
+    def _log_no_ble_device(self, connectable: list) -> None:
+        """Explain why no BLE connection is attempted.
+
+        Distinguishes "not seen at all", "seen but not connectable" (a
+        passive-only proxy), "the bound address is gone" and "several doors are
+        configured and this one isn't identifiable" — the last two are
+        actionable, so they warn (once per episode; this runs on every reconnect
+        attempt and fallback tick, so warning every time would spam).
+        """
         all_si = list(
             bluetooth.async_discovered_service_info(self.hass, connectable=False)
         )
-        matches = [
-            s for s in all_si if s.name and any(s.name.startswith(p) for p in BLE_NAME_PREFIXES)
-        ]
-        if matches:
-            # Warn once per episode, then drop to debug — this scan runs on every
-            # reconnect attempt and fallback tick, so a warning each time spams.
-            detail = ", ".join(
-                f"{s.name}/{s.address} rssi={s.rssi} src={s.source}" for s in matches
+        matches = [s for s in all_si if _is_flinx_name(s.name)]
+        detail = ", ".join(
+            f"{s.name}/{s.address} rssi={s.rssi} src={s.source}" for s in matches
+        )
+        prefixes = ", ".join(f"{p}*" for p in BLE_NAME_PREFIXES)
+
+        if self._ble_address:
+            reason = f"bound address {self._ble_address} is not connectable"
+            warn = True
+        elif not self._ble_autodetect:
+            reason = (
+                f"no advertisement identifies device {self._device_code}, and no "
+                "Bluetooth address is bound — bind one under the integration's "
+                "Bluetooth options to use BLE with more than one door"
             )
-            if not self._ble_not_connectable_warned:
-                _LOGGER.warning(
-                    "BLE: %s seen but not connectable (proxy may be passive-only); "
-                    "using cloud for commands: %s",
-                    ", ".join(f"{p}*" for p in BLE_NAME_PREFIXES),
-                    detail,
-                )
-                self._ble_not_connectable_warned = True
-            else:
-                _LOGGER.debug(
-                    "BLE: %s still not connectable: %s",
-                    ", ".join(f"{p}*" for p in BLE_NAME_PREFIXES),
-                    detail,
-                )
+            warn = True
+        elif matches:
+            reason = f"{prefixes} seen but not connectable (proxy may be passive-only)"
+            warn = True
+        else:
+            reason = (
+                f"no {prefixes} device discovered "
+                f"({len(connectable)} connectable, {len(all_si)} total adverts)"
+            )
+            warn = False
+
+        if warn and not self._ble_not_connectable_warned:
+            self._ble_not_connectable_warned = True
+            _LOGGER.warning(
+                "BLE unavailable for %s: %s; using cloud for commands%s",
+                self._door_alias, reason, f" [{detail}]" if detail else "",
+            )
         else:
             _LOGGER.debug(
-                "BLE: no %s* device discovered (%d connectable, %d total adverts)",
-                ", ".join(BLE_NAME_PREFIXES), len(connectable), len(all_si),
+                "BLE unavailable for %s: %s%s",
+                self._door_alias, reason, f" [{detail}]" if detail else "",
             )
-        return None
 
     async def _teardown_ble_client(self) -> None:
         """Drop a half-open client so the proxy connection slot is freed."""
@@ -317,9 +407,12 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 pass
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
-        _LOGGER.debug("BLE disconnected — will reconnect in 10s")
         self.is_ble_connected = False
         self._ble_client = None
+        if self._closing:
+            _LOGGER.debug("BLE disconnected during shutdown")
+            return
+        _LOGGER.debug("BLE disconnected — will reconnect in 10s")
         # Reconnect after a delay to avoid churn with the BLE proxy
         self.hass.loop.call_later(10, lambda: self.hass.async_create_task(
             self._ensure_ble_connected()
@@ -551,48 +644,48 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def _send_cloud_command(self, control_ident: int) -> bool:
         """Send a command via the cloud HTTP gateway."""
-        async with aiohttp.ClientSession() as session:
-            url = f"{CLOUD_GATEWAY_URL}/device/control/{self._device_code}"
-            params = {
-                "timestamp": int(time.time()),
-                "controlIdent": control_ident,
-            }
-            headers = {
-                "Accept-Language": "en",
-                "Api-Version": API_VERSION,
-                "client-id": "f-linx",
-            }
-            for attempt in range(2):
-                token = await self._account.async_get_token(session)
-                if not token:
-                    _LOGGER.error("Cloud command failed: unable to authenticate")
-                    return False
-                headers["Authorization"] = f"Bearer {token}"
-                try:
-                    async with session.get(url, params=params, headers=headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if data.get("code") == 200:
-                                _LOGGER.debug("Cloud command OK (controlIdent=%s)", control_ident)
-                                return True
-                            msg = data.get("msg", "unknown error")
-                            # Re-auth and retry on token/auth errors
-                            if "认证" in msg or "token" in msg.lower() or "auth" in msg.lower():
-                                _LOGGER.debug("Cloud token expired, re-authenticating")
-                                self._account.async_invalidate_token()
-                                continue
-                            _LOGGER.warning("Cloud command rejected: %s", msg)
-                            return False
-                        elif resp.status == 401:
+        session = async_get_clientsession(self.hass)
+        url = f"{CLOUD_GATEWAY_URL}/device/control/{self._device_code}"
+        params = {
+            "timestamp": int(time.time()),
+            "controlIdent": control_ident,
+        }
+        headers = {
+            "Accept-Language": "en",
+            "Api-Version": API_VERSION,
+            "client-id": "f-linx",
+        }
+        for _ in range(2):
+            token = await self._account.async_get_token(session)
+            if not token:
+                _LOGGER.error("Cloud command failed: unable to authenticate")
+                return False
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("code") == 200:
+                            _LOGGER.debug("Cloud command OK (controlIdent=%s)", control_ident)
+                            return True
+                        msg = data.get("msg", "unknown error")
+                        # Re-auth and retry on token/auth errors
+                        if "认证" in msg or "token" in msg.lower() or "auth" in msg.lower():
+                            _LOGGER.debug("Cloud token expired, re-authenticating")
                             self._account.async_invalidate_token()
                             continue
-                        else:
-                            _LOGGER.warning("Cloud command HTTP %s", resp.status)
-                            return False
-                except aiohttp.ClientError as err:
-                    _LOGGER.warning("Cloud command error: %s", err)
-                    return False
-            return False
+                        _LOGGER.warning("Cloud command rejected: %s", msg)
+                        return False
+                    elif resp.status == 401:
+                        self._account.async_invalidate_token()
+                        continue
+                    else:
+                        _LOGGER.warning("Cloud command HTTP %s", resp.status)
+                        return False
+            except aiohttp.ClientError as err:
+                _LOGGER.warning("Cloud command error: %s", err)
+                return False
+        return False
 
     # -----------------------------------------------------------------
     # REST fallback (used when MQTT is disconnected or stale)
@@ -661,8 +754,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(self._build_state())
 
     async def _async_fetch_device_info(self) -> dict[str, Any] | None:
-        async with aiohttp.ClientSession() as session:
-            return await self._api_get_device_info(session)
+        return await self._api_get_device_info(async_get_clientsession(self.hass))
 
     async def async_force_refresh(self) -> None:
         """Force a cloud REST state read, bypassing the MQTT-freshness check.
@@ -748,7 +840,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Periodic cloud poll failed: %s", err)
 
     async def async_shutdown(self) -> None:
-        """Disconnect MQTT and BLE cleanly."""
+        """Cancel scheduled work and disconnect MQTT and BLE cleanly."""
+        self._closing = True
+        await super().async_shutdown()
         if self._poll_unsub is not None:
             self._poll_unsub()
             self._poll_unsub = None
