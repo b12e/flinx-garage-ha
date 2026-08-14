@@ -33,6 +33,13 @@ BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
 # without an ack within this window we treat BLE as failed and fall back to cloud.
 BLE_ACK_TIMEOUT = 1.5  # seconds
 
+# How long a command waits for an in-flight BLE connect after the cloud has
+# refused it. The door can be off WiFi (the gateway answers "Device is offline")
+# while the opener is perfectly reachable over BLE a second or two later, so
+# local control gets the last word rather than the command being lost. Only ever
+# paid on a command that has already failed.
+BLE_COMMAND_CONNECT_WAIT = 6  # seconds
+
 # Upper bound on a single GATT write. A write through a BLE proxy waits for the
 # device's write response and can hang for the proxy's own timeout (30s with
 # ESPHome) if the device never answers. Commands must reach the door long before

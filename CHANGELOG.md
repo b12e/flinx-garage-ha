@@ -16,6 +16,7 @@
 
 ### Fixed
 - A Bluetooth command that the opener never answers no longer fails the action with `Timeout waiting for BluetoothGATTWriteResponse ... after 30.0s`. Writes are bounded at 5 seconds and fall back to the cloud, and a proxy's own transport errors are handled rather than raised at whoever pressed the button.
+- A command the cloud refuses is now retried over Bluetooth once the opener is connected, instead of being lost. The door dropping off WiFi makes the cloud answer `Device is offline` while the opener itself is still reachable locally, which is exactly when local control matters.
 - A command that reached neither Bluetooth nor the cloud is now reported as failed instead of appearing to succeed. The cloud's own explanation is passed through, so a rate limit reads as `Could not open the door: the F-LINX cloud said "Too frequent operation, please try again later"`.
 - Commands issued while a Bluetooth link is being torn down no longer fail with `'NoneType' object has no attribute 'write_gatt_char'`.
 - Config flow, options and action descriptions now show their proper text instead of raw translation keys - Home Assistant loads custom integration translations from `translations/en.json`, which was missing (only `strings.json` was shipped, and that file is never read at runtime).

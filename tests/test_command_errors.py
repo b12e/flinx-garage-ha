@@ -151,6 +151,52 @@ async def main() -> None:
                 coordinator._last_command_error is None,  # noqa: SLF001
             )
 
+        # A cloud refusal must give the local path the last word: the door drops
+        # off WiFi ("Device is offline") while its opener is still reachable.
+        coordinator = make_coordinator(hass, entry)
+        ble_calls = 0
+
+        async def ble_ready_on_retry(_cmd):
+            nonlocal ble_calls
+            ble_calls += 1
+            return ble_calls > 1  # not connected yet, connected by the retry
+
+        with (
+            patch.object(coordinator, "_send_ble_command", new=ble_ready_on_retry),
+            patch.object(
+                coordinator, "_send_cloud_command", new=AsyncMock(return_value=False)
+            ),
+            patch.object(
+                coordinator, "_async_wait_for_ble", new=AsyncMock(return_value=True)
+            ) as waited,
+            patch.object(coordinator, "_schedule_post_command_refresh"),
+        ):
+            coordinator._last_command_error = None  # noqa: SLF001
+            opened = await coordinator.async_door_open()
+        check("a cloud refusal is retried over BLE", opened is True)
+        check("it waited for the BLE connect", waited.await_count == 1)
+        check("BLE was tried before and after the cloud", ble_calls == 2, str(ble_calls))
+        check(
+            "the stale cloud error is cleared once BLE succeeds",
+            coordinator._last_command_error is None,  # noqa: SLF001
+        )
+
+        # Waiting must not turn a doomed command into a slow one.
+        with (
+            patch.object(coordinator, "_send_ble_command", new=AsyncMock(return_value=False)),
+            patch.object(
+                coordinator, "_send_cloud_command", new=AsyncMock(return_value=False)
+            ),
+            patch.object(
+                coordinator, "_async_wait_for_ble", new=AsyncMock(return_value=False)
+            ),
+            patch.object(coordinator, "_schedule_post_command_refresh"),
+        ):
+            check(
+                "no BLE and no cloud still reports failure",
+                await coordinator.async_door_open() is False,
+            )
+
         # An unknown position can't be driven to, and says so.
         coordinator.door_position = None
         with patch.object(coordinator, "_schedule_post_command_refresh"):

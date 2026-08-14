@@ -36,6 +36,7 @@ from .const import (
     ATTR_LED_ACTUAL,
     ATTR_OPERATED_CYCLES,
     BLE_ACK_TIMEOUT,
+    BLE_COMMAND_CONNECT_WAIT,
     BLE_CONNECT_TIMEOUT,
     BLE_NAME_PREFIXES,
     BLE_NOTIFY_CHAR,
@@ -124,6 +125,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
         self._ble_client: BleakClient | None = None
         self._ble_connecting = False
+        # The one in-flight connect attempt, so a command can wait for it
+        # instead of racing it.
+        self._connect_task: asyncio.Task[bool] | None = None
         # Set on shutdown so a pending reconnect timer can't have a torn-down
         # coordinator competing with its replacement for the proxy's slot.
         self._closing = False
@@ -407,9 +411,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return
         _LOGGER.debug("BLE disconnected — will reconnect in 10s")
         # Reconnect after a delay to avoid churn with the BLE proxy
-        self.hass.loop.call_later(10, lambda: self.hass.async_create_task(
-            self._ensure_ble_connected()
-        ))
+        self.hass.loop.call_later(10, self._async_start_connect)
 
     async def _send_ble_command(self, ble_cmd_id: int) -> bool:
         """Send a command over BLE if already connected.
@@ -432,8 +434,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 self._ble_client is not None,
                 self._ble_connecting,
             )
-            if not self._ble_connecting:
-                self.hass.async_create_task(self._ensure_ble_connected())
+            self._async_start_connect()
             return False
         dev_key = bytes.fromhex(self._dev_key)
         async with self._command_lock:
@@ -470,6 +471,33 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return True
         _LOGGER.debug("BLE command sent but no ack within %ss", BLE_ACK_TIMEOUT)
         return False
+
+    @callback
+    def _async_start_connect(self) -> asyncio.Task[bool] | None:
+        """Start a connect attempt, or return the one already running."""
+        if self._closing:
+            return None
+        if self._connect_task is not None and not self._connect_task.done():
+            return self._connect_task
+        self._connect_task = self.hass.async_create_task(self._ensure_ble_connected())
+        return self._connect_task
+
+    async def _async_wait_for_ble(self, timeout: float) -> bool:
+        """Wait up to timeout for a connect to finish. True if BLE is usable."""
+        if self._ble_client is not None and self._ble_client.is_connected:
+            return True
+        task = self._async_start_connect()
+        if task is None:
+            return False
+        try:
+            async with asyncio.timeout(timeout):
+                # Shielded: giving up on the wait must not cancel the connect,
+                # which the next command (or the fallback poll) can still use.
+                await asyncio.shield(task)
+        except (TimeoutError, asyncio.CancelledError):
+            _LOGGER.debug("BLE: still connecting after %ss", timeout)
+            return False
+        return self._ble_client is not None and self._ble_client.is_connected
 
     async def _wait_for_ble_ack(self, timeout: float) -> bool:
         """Poll for a notification arriving after the command write."""
@@ -621,8 +649,21 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("BLE command confirmed (ack)")
             self._schedule_post_command_refresh(target_position)
             return True
+
         _LOGGER.debug("BLE unavailable/unconfirmed, falling back to cloud command")
         ok = await self._send_cloud_command(cloud_control_ident)
+
+        if not ok:
+            # The cloud refuses while the door is off WiFi, but the opener is
+            # still there over BLE — a connect started above is often seconds
+            # from ready, so let local control have the last word.
+            _LOGGER.debug("Cloud command failed; waiting for BLE to retry locally")
+            if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
+                ok = await self._send_ble_command(ble_cmd_id)
+                if ok:
+                    _LOGGER.debug("BLE command confirmed (ack) after cloud failure")
+                    self._last_command_error = None
+
         if ok:
             self._schedule_post_command_refresh(target_position)
         return ok
@@ -818,8 +859,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, Any]:
         """Periodic tick: mostly a fallback when MQTT is stale."""
         # Opportunistically (re)establish BLE — doesn't fail the update if it can't.
-        if not self.is_ble_connected and not self._ble_connecting:
-            self.hass.async_create_task(self._ensure_ble_connected())
+        if not self.is_ble_connected:
+            self._async_start_connect()
 
         mqtt_fresh = (
             self.mqtt.is_connected
@@ -894,6 +935,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self._poll_unsub = None
         if self._post_command_refresh is not None:
             self._post_command_refresh.cancel()
+        if self._connect_task is not None:
+            self._connect_task.cancel()
+            self._connect_task = None
         self._cancel_position_task()
         await self.mqtt.disconnect()
         if self._ble_client and self._ble_client.is_connected:
