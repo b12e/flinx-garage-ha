@@ -30,6 +30,10 @@
 - Adding the same account a second time with different capitalisation is now recognised as already configured, instead of creating a duplicate entry whose entities collide.
 - Cloud calls reuse Home Assistant's shared HTTP session instead of opening a new one per request, per door.
 
+## 2.4.0
+- Adds a 'refresh state' action
+- Adds a config option for cloud polling, which is useful in case you also control your garage door using physical buttons or remotes
+
 ## 2.3.0
 
 ### Added
