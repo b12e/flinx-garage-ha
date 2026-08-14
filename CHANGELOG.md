@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Config flow, options and action descriptions now show their proper text instead of raw translation keys — Home Assistant loads custom integration translations from `translations/en.json`, which was missing (only `strings.json` was shipped, and that file is never read at runtime).
+- Corrected the `manifest.json` key order so the integration passes Home Assistant's hassfest validation.
+
 ## 2.3.0
 
 ### Added

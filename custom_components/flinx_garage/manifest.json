@@ -1,6 +1,11 @@
 {
   "domain": "flinx_garage",
   "name": "F-LINX Garage Door",
+  "bluetooth": [
+    {
+      "local_name": "Noru_*"
+    }
+  ],
   "codeowners": ["@b12e"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
@@ -14,10 +19,5 @@
     "paho-mqtt>=2.1.0",
     "pycryptodome>=3.19.0"
   ],
-  "version": "2.4.0",
-  "bluetooth": [
-    {
-      "local_name": "Noru_*"
-    }
-  ]
+  "version": "2.4.0"
 }
