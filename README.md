@@ -1,14 +1,18 @@
 # F-LinX Garage Door
 
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/)
+[![Validate](https://github.com/b12e/flinx-garage-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/b12e/flinx-garage-ha/actions/workflows/validate.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Home Assistant (HACS) integration for F-LinX / Force-Door garage door controllers.
 
 This integration works with [this](https://www.myforcedoor.com/prodetails/49/546.html) USB dongle.
 
 ## Features
 
-- **Real-time state** via MQTT — door position, LED status, operation count
-- **Local commands** via Bluetooth — works without internet
-- **Remote commands** via cloud API — fallback when Bluetooth is not available
+- **Real-time state** via MQTT - door position, LED status, operation count
+- **Local commands** via Bluetooth - works without internet
+- **Remote commands** via cloud API - fallback when Bluetooth is not available
 - Garage door cover entity (open / close / stop / set position)
 - LED light entity (on / off)
 - Operation count sensor
@@ -23,11 +27,25 @@ You can drive the door to a specific percentage with the cover position slider o
 
 ## Installation
 
-1. Install via [HACS](https://hacs.xyz/) — add this repo as a custom repository
+### HACS (recommended)
+
+This integration is not in the HACS default list yet, so add it as a custom repository:
+
+1. In Home Assistant, go to **HACS → ⋮ → Custom repositories**
+2. Add `https://github.com/b12e/flinx-garage-ha` with category **Integration**
+3. Search for **F-LinX Garage Door** in HACS and download it
+4. Restart Home Assistant
+
+### Manual
+
+1. Copy `custom_components/flinx_garage/` into your Home Assistant `config/custom_components/` directory
 2. Restart Home Assistant
-3. Go to **Settings → Devices & Services → Add Integration → F-LinX Garage Door**
-4. Enter your F-LinX account credentials
-5. Select your device (auto-detected from your account)
+
+### Configuration
+
+1. Go to **Settings → Devices & Services → Add Integration → F-LinX Garage Door**
+2. Enter your F-LinX account credentials
+3. Select your device (auto-detected from your account)
 
 ## Requirements
 
