@@ -38,38 +38,54 @@ _LOGGER = logging.getLogger(__name__)
 AttrCallback = Callable[[dict[int, Any]], Awaitable[None] | None]
 
 
-def parse_attr_up(data: bytes) -> dict[int, Any] | None:
-    """Parse a decrypted attr/up plaintext into an attribute dict.
+# The 02 02 marker that precedes the attribute TLVs. MQTT reports carry
+# seq/timestamp/motor ahead of it; the BLE reply to a command carries the same
+# TLVs after a bare 3-byte header and none of that.
+ATTR_MARKER = b"\x02\x02"
+MQTT_MARKER_OFFSET = 9
+BLE_MARKER_OFFSET = 3
+# Bytes of checksum/trailer after the last TLV, per layout.
+TRAILER_LEN = {MQTT_MARKER_OFFSET: 4, BLE_MARKER_OFFSET: 3}
 
-    Plaintext layout: 03 TT [seq:1] [ts:4] [motor:2] 02 02 [TLV ...] [adler32:4]
 
-    Byte 0 is always 0x03; byte 1 (TT) is a message-type/flags byte that has
-    been observed as 0x00, 0x04 and 0x1f for the same attr report shape — so we
-    key off byte 0 plus the 02 02 TLV marker at offset 9 rather than a fixed
-    two-byte prefix.
+def parse_attr_report(data: bytes) -> dict[int, Any] | None:
+    """Parse a decrypted attribute report into an attribute dict.
+
+    Two layouts carry the same TLVs:
+
+    - MQTT attr/up: ``03 TT [seq:1] [ts:4] [motor:2] 02 02 [TLV ...] [adler32:4]``
+    - BLE command reply: ``03 TT [seq:1] 02 02 [TLV ...] [trailer:3]``
+
+    Byte 0 is always 0x03; byte 1 (TT) is a message-type/flags byte observed as
+    0x00, 0x04 and 0x1f for the same report shape — so the marker's position is
+    what identifies the layout, rather than a fixed prefix.
 
     TLV entries: 2-byte attribute code (big-endian, 0x27XX) followed by
     a variable-length value (1 byte by default; 2 or 8 for known codes).
 
     Returns a dict mapping attributeCode (int) → value, or None if the
-    message doesn't look like an attr/up report.
+    message doesn't look like an attribute report.
     """
-    if len(data) < 15 or data[0] != 0x03 or data[9:11] != b"\x02\x02":
+    if len(data) < 12 or data[0] != 0x03:
+        return None
+
+    for marker_offset in (MQTT_MARKER_OFFSET, BLE_MARKER_OFFSET):
+        if data[marker_offset : marker_offset + 2] == ATTR_MARKER:
+            break
+    else:
         return None
 
     if data[1] != 0x00:
-        _LOGGER.debug("MQTT attr/up message-type byte = 0x%02x", data[1])
+        _LOGGER.debug("attr report message-type byte = 0x%02x", data[1])
 
-    result: dict[int, Any] = {
-        "_seq": data[2],
-        "_ts": struct.unpack(">I", data[3:7])[0],
-        "_motor": struct.unpack(">H", data[7:9])[0],
-    }
+    result: dict[int, Any] = {"_seq": data[2]}
+    if marker_offset == MQTT_MARKER_OFFSET:
+        result["_ts"] = struct.unpack(">I", data[3:7])[0]
+        result["_motor"] = struct.unpack(">H", data[7:9])[0]
 
-    # Attribute TLV starts at byte 11 (after 0x02 0x02)
-    # Stop 4 bytes before the end (Adler32 trailer)
-    end = len(data) - 4
-    i = 11
+    # Attribute TLVs start after the marker and stop before the trailer.
+    end = len(data) - TRAILER_LEN[marker_offset]
+    i = marker_offset + 2
     while i + 2 <= end:
         # Peek at 2-byte code
         code = struct.unpack(">H", data[i:i+2])[0]
@@ -218,7 +234,7 @@ class FlinxMqttClient:
             _LOGGER.debug("MQTT: failed to decrypt on %s", msg.topic)
             return
 
-        attrs = parse_attr_up(plaintext)
+        attrs = parse_attr_report(plaintext)
         if attrs is None:
             _LOGGER.debug("MQTT: unparseable plaintext: %s", plaintext.hex())
             return

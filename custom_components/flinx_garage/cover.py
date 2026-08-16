@@ -28,15 +28,28 @@ _LOGGER = logging.getLogger(__name__)
 # door "opening" or "closing". Otherwise we assume the door is idle.
 MOVING_WINDOW_SEC = 3.0
 
+# The controller's own readings jitter, and over BLE it reports several times a
+# second: a real close was logged as 45, 42, 45, 40. Taking direction from the
+# latest delta flips the door to "opening" on every blip, so it is taken from
+# movement away from the furthest point reached — the door has to travel this
+# far back before it counts as having reversed. Observed jitter is 3%.
+DIRECTION_HYSTERESIS = 4  # %
+
+# Two readings further apart than this say nothing about which way the door
+# travelled between them. A position that arrives after a gap is a resync — the
+# door was at 51% while the state still held 9% from a previous session, and
+# adopting that as +42% of travel showed a phantom "opening" the door never did.
+DIRECTION_MAX_GAP = 5.0  # seconds
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up F-LINX Garage Door cover."""
-    coordinator: FlinxGarageCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([FlinxGarageCover(coordinator, entry)])
+    """Set up F-LINX Garage Door covers."""
+    coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
+    async_add_entities(FlinxGarageCover(c) for c in coordinators.values())
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(
@@ -57,23 +70,28 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
     _attr_has_entity_name = True
     _attr_name = "Garage Door"
 
-    def __init__(
-        self, coordinator: FlinxGarageCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: FlinxGarageCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_cover"
+        device_code = coordinator.device_code
+        self._attr_unique_id = f"{device_code}_cover"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.data.get("door_alias") or "F-LINX Garage Door",
+            "identifiers": {(DOMAIN, device_code)},
+            "name": coordinator.door_alias,
             "manufacturer": "F-LINX",
             "model": "BIT-DOOR",
         }
 
-        # Direction tracking from position deltas (MQTT gives us ~5s cadence).
+        # Direction tracking from accumulated movement, not single deltas.
         self._last_position: int | None = None
         self._last_position_ts: float = 0.0
         self._direction: int = 0  # -1 closing, 0 idle, +1 opening
         self._direction_reset: asyncio.TimerHandle | None = None
+        # Furthest position reached in the current direction; movement is judged
+        # against this rather than against the previous sample.
+        self._extreme: int | None = None
+        # When the previous position reading arrived, to tell movement from a
+        # resync after a gap.
+        self._last_report_ts: float = 0.0
 
     @callback
     def _cancel_direction_reset(self) -> None:
@@ -107,15 +125,23 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         pos = self.coordinator.door_position
         now = time.monotonic()
 
-        if pos is not None and self._last_position is not None and pos != self._last_position:
-            delta = pos - self._last_position
-            if delta > 0:
-                self._direction = 1
-            elif delta < 0:
-                self._direction = -1
-            self._last_position_ts = now
-        elif pos is not None and self._last_position is None:
-            self._last_position_ts = now
+        if pos is not None:
+            if self._extreme is None or now - self._last_report_ts > DIRECTION_MAX_GAP:
+                # First reading, or the first after a gap: adopt the position
+                # without reading travel into it. Any direction a command set
+                # stands — its own timer decides when to give up on it.
+                self._extreme = pos
+                self._last_report_ts = now
+            elif self._direction and (pos - self._extreme) * self._direction > 0:
+                # Still travelling the way we thought: extend the reference.
+                self._extreme = pos
+                self._last_position_ts = now
+            elif abs(pos - self._extreme) >= DIRECTION_HYSTERESIS:
+                # Far enough back from the furthest point to be a real reversal
+                # (or, from a standstill, a real departure).
+                self._direction = 1 if pos > self._extreme else -1
+                self._extreme = pos
+                self._last_position_ts = now
 
         self._last_position = pos
 
@@ -168,25 +194,36 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
             "mqtt_connected": self.coordinator.mqtt.is_connected,
         }
 
-    async def async_open_cover(self, **kwargs: Any) -> None:
-        if await self.coordinator.async_door_open():
-            self._direction = 1
-            self._last_position_ts = time.monotonic()
+    @callback
+    def _set_commanded_direction(self, direction: int) -> None:
+        """Show the direction we just asked for, until readings say otherwise.
+
+        Re-anchors the movement reference so the first report after the command
+        extends the travel rather than reading as a reversal.
+        """
+        self._direction = direction
+        self._extreme = self.coordinator.door_position
+        self._last_position_ts = time.monotonic()
+        if direction:
             self._schedule_direction_reset()
-            self.async_write_ha_state()
+        else:
+            self._cancel_direction_reset()
+        self.async_write_ha_state()
+
+    async def async_open_cover(self, **kwargs: Any) -> None:
+        if not await self.coordinator.async_door_open():
+            raise self.coordinator.command_error("open the door")
+        self._set_commanded_direction(1)
 
     async def async_close_cover(self, **kwargs: Any) -> None:
-        if await self.coordinator.async_door_close():
-            self._direction = -1
-            self._last_position_ts = time.monotonic()
-            self._schedule_direction_reset()
-            self.async_write_ha_state()
+        if not await self.coordinator.async_door_close():
+            raise self.coordinator.command_error("close the door")
+        self._set_commanded_direction(-1)
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        if await self.coordinator.async_door_stop():
-            self._direction = 0
-            self._cancel_direction_reset()
-            self.async_write_ha_state()
+        if not await self.coordinator.async_door_stop():
+            raise self.coordinator.command_error("stop the door")
+        self._set_commanded_direction(0)
 
     async def async_refresh_state(self) -> None:
         """Force a cloud API state refresh (flinx_garage.refresh_state action)."""
@@ -198,8 +235,6 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         # Optimistic direction for snappy UI; coordinator position deltas
         # refine it as the door moves.
         if current is not None and position != current:
-            self._direction = 1 if position > current else -1
-            self._last_position_ts = time.monotonic()
-            self._schedule_direction_reset()
-            self.async_write_ha_state()
-        await self.coordinator.async_door_set_position(position)
+            self._set_commanded_direction(1 if position > current else -1)
+        if not await self.coordinator.async_door_set_position(position):
+            raise self.coordinator.command_error(f"move the door to {position}%")

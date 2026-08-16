@@ -70,6 +70,25 @@ def _ble_frame(plaintext: bytes, dev_key: bytes) -> bytes:
     return frame + bytes([checksum]) + b'\xAA\xAA'
 
 
+def unwrap_ble_frame(frame: bytes, dev_key: bytes) -> bytes | None:
+    """Decrypt an inbound BLE frame, or None if it isn't a complete one.
+
+    The device answers on the notify characteristic with the same envelope it
+    accepts — ``55 55 <total_len:2 BE> 01 <AES-ECB payload> <checksum> aa aa`` —
+    and the reply to a command carries a full attribute report, so this is a
+    local state source as well as a command acknowledgement.
+    """
+    if len(frame) < 8 or frame[:2] != b"\x55\x55" or frame[-2:] != b"\xAA\xAA":
+        return None
+    if int.from_bytes(frame[2:4], "big") != len(frame):
+        # Truncated or still being reassembled from notification chunks.
+        return None
+    if frame[4] != 0x01:
+        return None
+    # Between the 0x01 marker and the checksum byte before the footer.
+    return decrypt(frame[5:-3], dev_key)
+
+
 def sign(body: bytes) -> bytes:
     """Return 4-byte big-endian Adler32 of ``body``."""
     return struct.pack(">I", zlib.adler32(body) & 0xFFFFFFFF)

@@ -19,6 +19,12 @@ This integration works with [this](https://www.myforcedoor.com/prodetails/49/546
 
 Commands are always sent via Bluetooth first. If BLE is unavailable, the integration falls back to the cloud API automatically.
 
+One integration entry covers one F-LinX account, with all of its doors. Add or remove doors later under **Configure → Manage devices**.
+
+### Bluetooth with more than one door
+
+Your account reports which opener belongs to each door, so each door only ever talks to its own opener. With a single door configured, any `Noru_*` / `opener_*` opener in range is used. If a door has no opener reported and more than one door is configured, that door uses the cloud rather than risk sending a command to the wrong door.
+
 ### Set position (partial open)
 
 You can drive the door to a specific percentage with the cover position slider or the `cover.set_cover_position` action.
@@ -45,10 +51,10 @@ This integration is not in the HACS default list yet, so add it as a custom repo
 
 1. Go to **Settings → Devices & Services → Add Integration → F-LinX Garage Door**
 2. Enter your F-LinX account credentials
-3. Select your device (auto-detected from your account)
+3. Select which doors to add (all doors on your account are pre-selected)
 
 ## Requirements
 
-- Home Assistant 2024.1.0+
+- Home Assistant 2025.2.0+
 - Bluetooth adapter on your HA host (for local BLE commands)
 - [F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html) connected to WiFi

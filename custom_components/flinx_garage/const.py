@@ -22,8 +22,8 @@ MQTT_TOPIC_SERVICE_UP = "/thing/dongle/{device_code}/service/up"
 MQTT_TOPIC_SERVICE_DOWN = "/thing/dongle/{device_code}/service/down"
 MQTT_TOPIC_WILDCARD = "/thing/dongle/{device_code}/#"
 
-# BLE configuration
-BLE_NAME_PREFIX = "Noru_"  # Match any Noru_* device (discovered via HA Bluetooth)
+# BLE configuration.
+BLE_NAME_PREFIXES = ("Noru_", "opener_")
 BLE_WRITE_CHAR = "02362a10-cf3a-11e1-efdc-000215d5c51b"
 BLE_NOTIFY_CHAR = "02362a11-cf3a-11e1-efdc-000215d5c51b"
 BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
@@ -32,6 +32,19 @@ BLE_NOTIFY_CHAR2 = "02367a11-cf3a-11e1-efdc-000215d5c51b"
 # A bare GATT write succeeding does not mean the door accepted the frame, so
 # without an ack within this window we treat BLE as failed and fall back to cloud.
 BLE_ACK_TIMEOUT = 1.5  # seconds
+
+# How long a command waits for an in-flight BLE connect after the cloud has
+# refused it. The door can be off WiFi (the gateway answers "Device is offline")
+# while the opener is perfectly reachable over BLE a second or two later, so
+# local control gets the last word rather than the command being lost. Only ever
+# paid on a command that has already failed.
+BLE_COMMAND_CONNECT_WAIT = 6  # seconds
+
+# Upper bound on a single GATT write. A write through a BLE proxy waits for the
+# device's write response and can hang for the proxy's own timeout (30s with
+# ESPHome) if the device never answers. Commands must reach the door long before
+# that, so writes fail fast and fall back to the cloud instead.
+BLE_WRITE_TIMEOUT = 5  # seconds
 
 # Upper bound on a full BLE connect (link + service discovery + notify setup).
 # A proxy link can establish but then stall during discovery; the timeout stops
@@ -70,6 +83,29 @@ POSITION_POLL = 0.25     # s, how often to check live position while moving
 # momentum). We lead the stop by speed x this many seconds so it lands on target
 # instead of overshooting. Tune up if it still overshoots, down if it undershoots.
 POSITION_LEAD_TIME = 1.3  # s
+# A BLE reply reports the position within milliseconds, so when the live reading
+# is local there is far less latency to lead by. Overshoot comes from the motor's
+# own coast, not from waiting on the cloud.
+POSITION_LEAD_TIME_LOCAL = 0.4  # s
+# How recently a BLE report must have arrived to count as the live source.
+POSITION_LOCAL_MAX_AGE = 4  # s
+# The REST snapshot carries no timestamp, so its age is unknowable — it has been
+# seen a minute behind. It is only believed when nothing timestamped has been
+# heard for this long, i.e. when it is all we have.
+CLOUD_POSITION_TRUST_AFTER = 30  # s
+# An MQTT report's own timestamp is trusted only if it is anywhere near the
+# clock; outside this it is treated as undated, like the REST snapshot.
+REPORT_TS_SANITY = 600  # s
+# Drive passes allowed per set_position request: one to get there, one to correct
+# an overshoot. Bounded so a door that can't hold position doesn't hunt forever.
+POSITION_MAX_PASSES = 2
+# Time for the door to come to rest (and its report to arrive) before judging
+# where it landed.
+POSITION_SETTLE = 2.0  # s
+
+# Config entry format version. Bumped to 3 when the entry moved from one door
+# per entry to one account per entry (see async_migrate_entry in __init__.py).
+ENTRY_VERSION = 3
 
 # Config entry keys
 CONF_USERNAME = "username"
@@ -77,6 +113,21 @@ CONF_PASSWORD = "password"
 CONF_DEVICE_CODE = "device_code"
 CONF_DEV_KEY = "dev_key"
 CONF_DOOR_ALIAS = "door_alias"
+CONF_DEVICES = "devices"
+# The opener's BLE local name as the cloud API reports it. This is what pins a
+# door to one peripheral, which is what makes BLE safe to use when more than one
+# door is configured.
+CONF_BLE_NAME = "ble_name"
+
+# queryDevice and deviceInfo both report the opener's BLE local name here, as
+# "<prefix>_<MAC without separators>" (e.g. Noru_9C9E6E09CAFC). Their
+# bluetoothMac/bluetoothUuid fields are the iOS CoreBluetooth peripheral UUID,
+# not a MAC, so they are useless for matching on Home Assistant — the address
+# is recovered from the name instead.
+API_KEY_BLE_NAME = "bluetoothName"
+
+# Fallback name for a door the cloud API didn't give an alias for.
+DEFAULT_DOOR_ALIAS = "F-LINX Garage Door"
 
 # Options-flow keys
 CONF_POLL_INTERVAL = "poll_interval"
