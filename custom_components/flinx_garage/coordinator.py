@@ -378,39 +378,42 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 if not self._ble_client.services:
                     await self._ble_client.get_services()
 
-                # Some openers (Steel Line SD1500/RD1000 Pro, "opener_" models)
-                # report 02367a11 without descriptors through ESPHome BLE
-                # proxies even though phones see its CCCD. All state and acks
-                # arrive on 02362a11, so treat a failed subscription here as
-                # non-fatal rather than aborting the connection.
+                # Seen through ESPHome BLE proxies: 02367a11 is reported
+                # without a CCCD, so subscribing to it raises, even though
+                # phones see a CCCD on the same door. 02367a11 is optional.
+                # 02362a11 is the characteristic that carries the state stream
+                # and the command acks, so only that one is worth aborting for.
+                subscribed_primary = False
                 for char_uuid in (BLE_NOTIFY_CHAR, BLE_NOTIFY_CHAR2):
                     try:
                         await self._ble_client.start_notify(char_uuid, self._ble_notification)
                     except BleakError as err:
                         _LOGGER.debug(
-                            "BLE: %s not subscribable on this opener (%s); continuing",
+                            "BLE: %s not subscribable on this link (%s); continuing",
                             char_uuid,
                             err,
                         )
+                    else:
+                        subscribed_primary |= char_uuid == BLE_NOTIFY_CHAR
+                if not subscribed_primary:
+                    # Without it the link is useless: no position updates, and
+                    # every command would stall for BLE_ACK_TIMEOUT before
+                    # falling back to the cloud. Better to fail the connect.
+                    raise BleakError(
+                        f"{BLE_NOTIFY_CHAR} not subscribable: no state or ack path"
+                    )
 
                 # Authenticate once per connection. The device validates this
                 # frame before it will accept any command; the app sends it
                 # once after service discovery (with a short settle delay).
                 await asyncio.sleep(0.8)
                 self._last_notification = None
-
                 # Bounded separately from the connect budget: a write that hangs
                 # on the proxy would otherwise eat the whole of it.
-                try:
-                    async with asyncio.timeout(BLE_WRITE_TIMEOUT):
-                        await self._ble_client.write_gatt_char(
-                            BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
-                        )
-                    await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
-                except (TimeoutError, BleakError) as err:
-                    _LOGGER.debug("BLE auth write failed: %s", err)
-                    raise
-
+                async with asyncio.timeout(BLE_WRITE_TIMEOUT):
+                    await self._ble_client.write_gatt_char(
+                        BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
+                    )
                 await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
 
             self.is_ble_connected = True
@@ -1123,9 +1126,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._cancel_position_task()
         await self.mqtt.disconnect()
         if self._ble_client and self._ble_client.is_connected:
+            for char_uuid in (BLE_NOTIFY_CHAR, BLE_NOTIFY_CHAR2):
+                try:
+                    await self._ble_client.stop_notify(char_uuid)
+                except BleakError:
+                    # Never subscribed on this link, or already torn down.
+                    # Must not skip the disconnect below: that frees the slot.
+                    pass
             try:
-                await self._ble_client.stop_notify(BLE_NOTIFY_CHAR)
-                await self._ble_client.stop_notify(BLE_NOTIFY_CHAR2)
                 await self._ble_client.disconnect()
             except BleakError:
                 pass
