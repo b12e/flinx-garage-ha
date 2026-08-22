@@ -377,20 +377,40 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 )
                 if not self._ble_client.services:
                     await self._ble_client.get_services()
-                await self._ble_client.start_notify(BLE_NOTIFY_CHAR, self._ble_notification)
-                await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
+
+                # Some openers (Steel Line SD1500/RD1000 Pro, "opener_" models)
+                # report 02367a11 without descriptors through ESPHome BLE
+                # proxies even though phones see its CCCD. All state and acks
+                # arrive on 02362a11, so treat a failed subscription here as
+                # non-fatal rather than aborting the connection.
+                for char_uuid in (BLE_NOTIFY_CHAR, BLE_NOTIFY_CHAR2):
+                    try:
+                        await self._ble_client.start_notify(char_uuid, self._ble_notification)
+                    except BleakError as err:
+                        _LOGGER.debug(
+                            "BLE: %s not subscribable on this opener (%s); continuing",
+                            char_uuid,
+                            err,
+                        )
 
                 # Authenticate once per connection. The device validates this
                 # frame before it will accept any command; the app sends it
                 # once after service discovery (with a short settle delay).
                 await asyncio.sleep(0.8)
                 self._last_notification = None
+
                 # Bounded separately from the connect budget: a write that hangs
                 # on the proxy would otherwise eat the whole of it.
-                async with asyncio.timeout(BLE_WRITE_TIMEOUT):
-                    await self._ble_client.write_gatt_char(
-                        BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
-                    )
+                try:
+                    async with asyncio.timeout(BLE_WRITE_TIMEOUT):
+                        await self._ble_client.write_gatt_char(
+                            BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
+                        )
+                    await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
+                except (TimeoutError, BleakError) as err:
+                    _LOGGER.debug("BLE auth write failed: %s", err)
+                    raise
+
                 await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
 
             self.is_ble_connected = True
