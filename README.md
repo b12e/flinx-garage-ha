@@ -54,5 +54,5 @@ This integration is not in the HACS default list yet, so add it as a custom repo
 ## Requirements
 
 - Home Assistant 2025.2.0+
-- Bluetooth adapter on your HA host (for local BLE commands)
+- Bluetooth adapter on your HA host (for local BLE commands) or an ESPHome based Bluetooth Proxy in range of your garage door
 - A garage door that works with the F-LinX app - either directly or via the USB dongle ([F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html)) connected to WiFi
