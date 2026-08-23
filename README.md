@@ -4,9 +4,7 @@
 [![Validate](https://github.com/b12e/flinx-garage-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/b12e/flinx-garage-ha/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Home Assistant (HACS) integration for F-LinX / Force-Door garage door controllers.
-
-This integration works with [this](https://www.myforcedoor.com/prodetails/49/546.html) USB dongle.
+Home Assistant (HACS) integration for F-LinX-controlled garage doors.
 
 ## Features
 
@@ -57,4 +55,4 @@ This integration is not in the HACS default list yet, so add it as a custom repo
 
 - Home Assistant 2025.2.0+
 - Bluetooth adapter on your HA host (for local BLE commands)
-- [F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html) connected to WiFi
+- A garage door that works with the F-LinX app - either directly or via the USB dongle ([F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html)) connected to WiFi
