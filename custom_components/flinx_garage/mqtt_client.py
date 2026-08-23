@@ -20,8 +20,12 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from .const import (
+    ATTR_CODE_MAX,
+    ATTR_CODE_MIN,
     ATTR_SIZE_2B,
     ATTR_SIZE_8B,
+    ATTR_SIZE_STR,
+    ATTR_STATE_CODE_MIN,
     MQTT_BROKER,
     MQTT_KEEPALIVE,
     MQTT_PASSWORD,
@@ -44,8 +48,71 @@ AttrCallback = Callable[[dict[int, Any]], Awaitable[None] | None]
 ATTR_MARKER = b"\x02\x02"
 MQTT_MARKER_OFFSET = 9
 BLE_MARKER_OFFSET = 3
-# Bytes of checksum/trailer after the last TLV, per layout.
-TRAILER_LEN = {MQTT_MARKER_OFFSET: 4, BLE_MARKER_OFFSET: 3}
+# Bytes of checksum/trailer after the last TLV, per layout. The MQTT plaintext
+# ends in its Adler-32; a BLE frame carries its checksum outside the encrypted
+# payload, so there every byte after the marker belongs to the report.
+TRAILER_LEN = {MQTT_MARKER_OFFSET: 4, BLE_MARKER_OFFSET: 0}
+
+
+def _tlv_value_size(data: bytes, code: int, i: int, end: int) -> int:
+    """Length of the value at ``i`` for attribute ``code``.
+
+    Most values are a single byte and a few known codes are wider. For the rest
+    the length is inferred from where the next attribute code would have to
+    land — the format is self-delimiting only in that sense.
+    """
+    if code in ATTR_SIZE_8B:
+        return 8
+    if code in ATTR_SIZE_2B:
+        return 2
+    if code in ATTR_SIZE_STR:
+        # NUL-terminated (the device name). Length varies per device.
+        terminator = data.find(b"\x00", i, end)
+        return terminator - i + 1 if terminator != -1 else end - i
+    if i + 3 > end:
+        return 1
+    if ATTR_CODE_MIN <= struct.unpack(">H", data[i + 1 : i + 3])[0] <= ATTR_CODE_MAX:
+        return 1
+    next_code_2b = (
+        struct.unpack(">H", data[i + 2 : i + 4])[0] if i + 4 <= end else 0
+    )
+    return 2 if ATTR_CODE_MIN <= next_code_2b <= ATTR_CODE_MAX else 1
+
+
+def _parse_tlvs(data: bytes, i: int, end: int) -> dict[int, Any]:
+    """Walk ``data[i:end]`` as attribute TLVs, stopping at the first non-TLV.
+
+    TLV entries: 2-byte attribute code (big-endian, 0x27XX) followed by a
+    variable-length value.
+    """
+    attrs: dict[int, Any] = {}
+    while i + 2 <= end:
+        code = struct.unpack(">H", data[i : i + 2])[0]
+        if code < ATTR_CODE_MIN or code > ATTR_CODE_MAX:
+            # Not a valid code — either we've walked off the attr region or
+            # this is padding/trailer. Stop parsing.
+            break
+
+        i += 2
+        size = _tlv_value_size(data, code, i, end)
+        if i + size > end:
+            break
+
+        raw = data[i : i + size]
+        if code in ATTR_SIZE_STR:
+            attrs[code] = raw.rstrip(b"\x00").decode("utf-8", "replace")
+        elif size == 1:
+            attrs[code] = raw[0]
+        elif size == 2:
+            attrs[code] = struct.unpack(">H", raw)[0]
+        elif size == 4:
+            attrs[code] = struct.unpack(">I", raw)[0]
+        else:
+            attrs[code] = raw.hex()
+
+        i += size
+
+    return attrs
 
 
 def parse_attr_report(data: bytes) -> dict[int, Any] | None:
@@ -54,14 +121,15 @@ def parse_attr_report(data: bytes) -> dict[int, Any] | None:
     Two layouts carry the same TLVs:
 
     - MQTT attr/up: ``03 TT [seq:1] [ts:4] [motor:2] 02 02 [TLV ...] [adler32:4]``
-    - BLE command reply: ``03 TT [seq:1] 02 02 [TLV ...] [trailer:3]``
+    - BLE command reply: ``03 TT [seq:1] 02 02 [TLV ...]``
 
     Byte 0 is always 0x03; byte 1 (TT) is a message-type/flags byte observed as
-    0x00, 0x04 and 0x1f for the same report shape — so the marker's position is
-    what identifies the layout, rather than a fixed prefix.
+    0x00, 0x04, 0x06 and 0x1f for the same report shape — so the marker's
+    position is what identifies the layout, rather than a fixed prefix.
 
-    TLV entries: 2-byte attribute code (big-endian, 0x27XX) followed by
-    a variable-length value (1 byte by default; 2 or 8 for known codes).
+    Some firmware prefixes the state attributes with device metadata
+    (0x2700-0x2708, including the NUL-terminated Bluetooth name), so the first
+    TLV is not necessarily the first state attribute.
 
     Returns a dict mapping attributeCode (int) → value, or None if the
     message doesn't look like an attribute report.
@@ -84,53 +152,19 @@ def parse_attr_report(data: bytes) -> dict[int, Any] | None:
         result["_motor"] = struct.unpack(">H", data[7:9])[0]
 
     # Attribute TLVs start after the marker and stop before the trailer.
+    start = marker_offset + 2
     end = len(data) - TRAILER_LEN[marker_offset]
-    i = marker_offset + 2
-    while i + 2 <= end:
-        # Peek at 2-byte code
-        code = struct.unpack(">H", data[i:i+2])[0]
-        if code < 9993 or code > 10020:
-            # Not a valid code — either we've walked off the attr region
-            # or this is padding/trailer. Stop parsing.
-            break
+    attrs = _parse_tlvs(data, start, end)
+    if not any(code >= ATTR_STATE_CODE_MIN for code in attrs):
+        # A metadata attribute of a width we don't know threw the walk off
+        # before it reached the state attributes. Resync on the first code that
+        # could start one and parse from there.
+        for i in range(start, end - 1):
+            if ATTR_STATE_CODE_MIN <= struct.unpack(">H", data[i : i + 2])[0] <= ATTR_CODE_MAX:
+                attrs = _parse_tlvs(data, i, end)
+                break
 
-        attr_code = code  # store as 0x27XX decimal equivalent
-        i += 2
-
-        if attr_code in ATTR_SIZE_8B:
-            size = 8
-        elif attr_code in ATTR_SIZE_2B:
-            size = 2
-        else:
-            # Unknown-size attributes default to 1 byte. If the next 2 bytes
-            # form another valid code, assume 1 byte; otherwise scan forward.
-            if i + 3 <= end:
-                next_code = struct.unpack(">H", data[i+1:i+3])[0]
-                if 9993 <= next_code <= 10020:
-                    size = 1
-                else:
-                    # Could be 2-byte value
-                    next_code_2b = struct.unpack(">H", data[i+2:i+4])[0] if i + 4 <= end else 0
-                    size = 2 if 9993 <= next_code_2b <= 10020 else 1
-            else:
-                size = 1
-
-        if i + size > end:
-            break
-
-        raw = data[i:i+size]
-        if size == 1:
-            value = raw[0]
-        elif size == 2:
-            value = struct.unpack(">H", raw)[0]
-        elif size == 4:
-            value = struct.unpack(">I", raw)[0]
-        else:
-            value = raw.hex()
-
-        result[attr_code] = value
-        i += size
-
+    result.update(attrs)
     return result
 
 

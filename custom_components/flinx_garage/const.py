@@ -55,6 +55,7 @@ BLE_CONNECT_TIMEOUT = 30  # seconds
 # the per-device devKey using AES-128-ECB encryption. No hardcoded blobs needed.
 
 # Attribute codes observed in MQTT attr/up reports (0x27XX big-endian)
+ATTR_DEVICE_NAME = 9984         # 0x2700, NUL-terminated Bluetooth name
 ATTR_DOOR_CONTROL = 10001       # Door control state
 ATTR_LED_TIMER = 10002
 ATTR_AUTO_CLOSE_DELAY = 10003
@@ -69,6 +70,13 @@ ATTR_DEVICE_ID = 10014          # 8-byte device ID (informational)
 # Known 2-byte attrs (vs default 1-byte)
 ATTR_SIZE_2B = {ATTR_OPERATED_CYCLES, ATTR_MOTOR_BASELINE}
 ATTR_SIZE_8B = {ATTR_DEVICE_ID}
+ATTR_SIZE_STR = {ATTR_DEVICE_NAME}
+
+# Attribute codes run 0x2700-0x2724. 0x2700-0x2708 are device metadata some
+# firmware prefixes to a report; the state attributes above start at 0x2709.
+ATTR_CODE_MIN = 0x2700          # 9984
+ATTR_CODE_MAX = 0x2724          # 10020
+ATTR_STATE_CODE_MIN = 0x2709    # 9993
 
 # Door states
 DOOR_STATE_CLOSED = 0
