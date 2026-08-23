@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Bluetooth state updates are now read on every opener. Some controllers prefix the attribute report with device metadata - the Bluetooth name first, which is a different length on every door - and the parser stopped at the first of those instead of walking past them, so it never reached the door position and Home Assistant fell back to the cloud's minute-old reading ([#17](https://github.com/b12e/flinx-garage-ha/issues/17)).
+- The last attribute in a Bluetooth report is no longer discarded. The frame's checksum sits outside the encrypted payload, so the three bytes that were skipped as a trailer were in fact the final attribute - the LED state on the openers that report it last, and the device ID on the others.
+
 ## 3.0.0
 
 ### Added
