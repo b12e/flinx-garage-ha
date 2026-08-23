@@ -377,8 +377,31 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 )
                 if not self._ble_client.services:
                     await self._ble_client.get_services()
-                await self._ble_client.start_notify(BLE_NOTIFY_CHAR, self._ble_notification)
-                await self._ble_client.start_notify(BLE_NOTIFY_CHAR2, self._ble_notification)
+
+                # Seen through ESPHome BLE proxies: 02367a11 is reported
+                # without a CCCD, so subscribing to it raises, even though
+                # phones see a CCCD on the same door. 02367a11 is optional.
+                # 02362a11 is the characteristic that carries the state stream
+                # and the command acks, so only that one is worth aborting for.
+                subscribed_primary = False
+                for char_uuid in (BLE_NOTIFY_CHAR, BLE_NOTIFY_CHAR2):
+                    try:
+                        await self._ble_client.start_notify(char_uuid, self._ble_notification)
+                    except BleakError as err:
+                        _LOGGER.debug(
+                            "BLE: %s not subscribable on this link (%s); continuing",
+                            char_uuid,
+                            err,
+                        )
+                    else:
+                        subscribed_primary |= char_uuid == BLE_NOTIFY_CHAR
+                if not subscribed_primary:
+                    # Without it the link is useless: no position updates, and
+                    # every command would stall for BLE_ACK_TIMEOUT before
+                    # falling back to the cloud. Better to fail the connect.
+                    raise BleakError(
+                        f"{BLE_NOTIFY_CHAR} not subscribable: no state or ack path"
+                    )
 
                 # Authenticate once per connection. The device validates this
                 # frame before it will accept any command; the app sends it
@@ -1103,9 +1126,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._cancel_position_task()
         await self.mqtt.disconnect()
         if self._ble_client and self._ble_client.is_connected:
+            for char_uuid in (BLE_NOTIFY_CHAR, BLE_NOTIFY_CHAR2):
+                try:
+                    await self._ble_client.stop_notify(char_uuid)
+                except BleakError:
+                    # Never subscribed on this link, or already torn down.
+                    # Must not skip the disconnect below: that frees the slot.
+                    pass
             try:
-                await self._ble_client.stop_notify(BLE_NOTIFY_CHAR)
-                await self._ble_client.stop_notify(BLE_NOTIFY_CHAR2)
                 await self._ble_client.disconnect()
             except BleakError:
                 pass
