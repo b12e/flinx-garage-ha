@@ -35,8 +35,16 @@
         "title": "F-LINX Garage Door options",
         "description": "Choose what to configure.",
         "menu_options": {
+          "connection_mode": "Connection mode",
           "poll_interval": "Periodic cloud poll",
           "devices": "Manage devices"
+        }
+      },
+      "connection_mode": {
+        "title": "Connection mode",
+        "description": "Choose which connections this integration may use.\n\n**Bluetooth only** is fully local: Home Assistant never contacts the F-LINX cloud. There is no MQTT push and the periodic cloud poll is switched off, so the door's position is only updated by commands Home Assistant sends itself. If the door is opened another way — an RF remote, the wall button, the F-LINX app or the auto-close timer — Home Assistant will not see it and the state stays stale until it next sends a command. The position is also unknown after a restart until the first command.\n\n**Bluetooth preferred** sends commands locally when the opener is in range and falls back to the cloud otherwise. State comes from MQTT push, so door movements from a remote are picked up.\n\n**Cloud preferred** does the same in reverse: the cloud first, Bluetooth as the fallback when the door is off WiFi.\n\n**Cloud only** switches the Bluetooth stack off entirely, freeing your adapter's or proxy's connection slot. Commands take the cloud's round trip, and without the local position stream setting a partial position is less precise.",
+        "data": {
+          "connection_mode": "Connection mode"
         }
       },
       "poll_interval": {
@@ -60,13 +68,24 @@
     "abort": {
       "invalid_auth": "Invalid username or password",
       "no_devices": "No devices found on this account",
-      "cannot_connect": "Failed to connect to F-LINX API"
+      "cannot_connect": "Failed to connect to F-LINX API",
+      "cloud_disabled": "The periodic cloud poll is unavailable while the connection mode is Bluetooth only."
     }
   },
   "services": {
     "refresh_state": {
       "name": "Refresh state",
       "description": "Force an immediate state read from the F-LINX cloud API, bypassing MQTT. Useful in automations when MQTT push updates are unreliable."
+    }
+  },
+  "selector": {
+    "connection_mode": {
+      "options": {
+        "ble_only": "Bluetooth only",
+        "ble_preferred": "Bluetooth preferred, cloud fallback",
+        "cloud_preferred": "Cloud preferred, Bluetooth fallback",
+        "cloud_only": "Cloud only"
+      }
     }
   }
 }

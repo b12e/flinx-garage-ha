@@ -32,6 +32,7 @@ from .const import (
     API_BASE_URL,
     API_KEY_BLE_NAME,
     API_VERSION,
+    BLE_DISABLED_MODES,
     ATTR_DOOR_POSITION,
     ATTR_LED_ACTUAL,
     ATTR_OPERATED_CYCLES,
@@ -48,12 +49,17 @@ from .const import (
     CLOUD_CMD_LED_ON,
     CLOUD_CMD_OPEN,
     CLOUD_CMD_STOP,
+    CLOUD_DISABLED_MODES,
     CLOUD_GATEWAY_URL,
     CLOUD_POSITION_TRUST_AFTER,
+    DEFAULT_CONNECTION_MODE,
     DEFAULT_FALLBACK_SCAN_INTERVAL,
     DOOR_STATE_CLOSED,
     DOOR_STATE_OPEN,
     DOMAIN,
+    MODE_BLE_ONLY,
+    MODE_CLOUD_ONLY,
+    MODE_CLOUD_PREFERRED,
     MQTT_STALE_THRESHOLD,
     POSITION_LEAD_TIME,
     POSITION_LEAD_TIME_LOCAL,
@@ -106,6 +112,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         ble_name: str | None = None,
         ble_autodetect: bool = True,
         poll_interval: int = 0,
+        connection_mode: str = DEFAULT_CONNECTION_MODE,
     ) -> None:
         super().__init__(
             hass,
@@ -126,6 +133,12 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._ble_autodetect = ble_autodetect
         self._poll_interval = poll_interval
         self._poll_unsub: Callable[[], None] | None = None
+        # Which transports this door may use. The two flags below are what the
+        # rest of the coordinator checks; the mode itself only decides the order
+        # commands try things in.
+        self._connection_mode = connection_mode
+        self._ble_enabled = connection_mode not in BLE_DISABLED_MODES
+        self._cloud_enabled = connection_mode not in CLOUD_DISABLED_MODES
         # Warn only once per "BLE unusable" episode to avoid log spam (the BLE
         # scan runs on every reconnect/fallback tick).
         self._ble_not_connectable_warned = False
@@ -182,6 +195,11 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     def door_alias(self) -> str:
         """User-facing alias for this door."""
         return self._door_alias
+
+    @property
+    def connection_mode(self) -> str:
+        """Which transports this door is allowed to use."""
+        return self._connection_mode
 
     # -----------------------------------------------------------------
     # Inbound state (MQTT attr/up and BLE command replies share a format)
@@ -344,7 +362,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self._apply_attrs(attrs)
 
     async def _ensure_ble_connected(self) -> bool:
-        if self._closing:
+        if self._closing or not self._ble_enabled:
             return False
 
         if self._ble_client and self._ble_client.is_connected:
@@ -562,6 +580,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         (the auth/command format is reverse-engineered). Without an ack we
         return False so the caller falls back to the cloud command.
         """
+        if not self._ble_enabled:
+            return False
+
         # Hold onto the client: a disconnect callback or a failing sibling
         # command can drop self._ble_client while this one waits for the lock.
         client = self._ble_client
@@ -615,8 +636,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     @callback
     def _async_start_connect(self) -> asyncio.Task[bool] | None:
-        """Start a connect attempt, or return the one already running."""
-        if self._closing:
+        """Start a connect attempt, or return the one already running.
+
+        The single gate on the whole BLE stack: with Bluetooth switched off this
+        returns None, which also stops the reconnect timer, the opportunistic
+        connect on the coordinator tick and _async_wait_for_ble.
+        """
+        if self._closing or not self._ble_enabled:
             return None
         if self._connect_task is not None and not self._connect_task.done():
             return self._connect_task
@@ -817,30 +843,82 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         cloud_control_ident: int,
         target_position: int | None = None,
     ) -> bool:
-        """Send a command via BLE first; fall back to cloud if BLE unavailable."""
+        """Send a command over the transports the connection mode allows."""
         self._last_command_error = None
-        if await self._send_ble_command(ble_cmd_id):
-            _LOGGER.debug("BLE command confirmed (ack)")
-            self._schedule_post_command_refresh(target_position)
-            return True
 
-        _LOGGER.debug("BLE unavailable/unconfirmed, falling back to cloud command")
-        ok = await self._send_cloud_command(cloud_control_ident)
-
-        if not ok:
-            # The cloud refuses while the door is off WiFi, but the opener is
-            # still there over BLE — a connect started above is often seconds
-            # from ready, so let local control have the last word.
-            _LOGGER.debug("Cloud command failed; waiting for BLE to retry locally")
-            if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
-                ok = await self._send_ble_command(ble_cmd_id)
-                if ok:
-                    _LOGGER.debug("BLE command confirmed (ack) after cloud failure")
-                    self._last_command_error = None
+        if self._connection_mode == MODE_BLE_ONLY:
+            ok = await self._send_ble_only(ble_cmd_id)
+        elif self._connection_mode == MODE_CLOUD_ONLY:
+            ok = await self._send_cloud_command(cloud_control_ident)
+        elif self._connection_mode == MODE_CLOUD_PREFERRED:
+            ok = await self._send_cloud_first(ble_cmd_id, cloud_control_ident)
+        else:
+            ok = await self._send_ble_first(ble_cmd_id, cloud_control_ident)
 
         if ok:
             self._schedule_post_command_refresh(target_position)
         return ok
+
+    async def _send_ble_first(self, ble_cmd_id: int, cloud_control_ident: int) -> bool:
+        """BLE, then cloud, then BLE again once a connect has had time to land."""
+        if await self._send_ble_command(ble_cmd_id):
+            _LOGGER.debug("BLE command confirmed (ack)")
+            return True
+
+        _LOGGER.debug("BLE unavailable/unconfirmed, falling back to cloud command")
+        ok = await self._send_cloud_command(cloud_control_ident)
+        if ok:
+            return True
+
+        # The cloud refuses while the door is off WiFi, but the opener is still
+        # there over BLE — a connect started above is often seconds from ready,
+        # so let local control have the last word.
+        _LOGGER.debug("Cloud command failed; waiting for BLE to retry locally")
+        if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
+            if await self._send_ble_command(ble_cmd_id):
+                _LOGGER.debug("BLE command confirmed (ack) after cloud failure")
+                self._last_command_error = None
+                return True
+        return False
+
+    async def _send_cloud_first(self, ble_cmd_id: int, cloud_control_ident: int) -> bool:
+        """Cloud, then BLE — the mirror of _send_ble_first.
+
+        The door can be on WiFi but slow to answer, or off it entirely, so a
+        refused cloud command still gets the local path as a second chance.
+        """
+        if await self._send_cloud_command(cloud_control_ident):
+            return True
+
+        _LOGGER.debug("Cloud command failed; falling back to BLE")
+        if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
+            if await self._send_ble_command(ble_cmd_id):
+                _LOGGER.debug("BLE command confirmed (ack) after cloud failure")
+                self._last_command_error = None
+                return True
+        return False
+
+    async def _send_ble_only(self, ble_cmd_id: int) -> bool:
+        """BLE, with one retry after waiting for a connect. Never the cloud.
+
+        Unlike the mixed modes there is nothing to fall back to, so it is worth
+        paying the connect wait up front rather than failing on a link that was
+        about to come up.
+        """
+        if await self._send_ble_command(ble_cmd_id):
+            _LOGGER.debug("BLE command confirmed (ack)")
+            return True
+
+        if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
+            if await self._send_ble_command(ble_cmd_id):
+                _LOGGER.debug("BLE command confirmed (ack) after waiting for connect")
+                return True
+
+        self._last_command_error = (
+            "the opener did not answer over Bluetooth, and the connection mode "
+            "is set to Bluetooth only so the cloud was not tried"
+        )
+        return False
 
     @callback
     def command_error(self, action: str) -> HomeAssistantError:
@@ -864,6 +942,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def _async_post_command_refresh(self, target_position: int | None) -> None:
         """Poll the cloud API briefly after a command to converge state quickly."""
+        if not self._cloud_enabled:
+            # Nothing to converge against: the command's own BLE reply already
+            # carried a fresh report, and it is the only state source there is.
+            return
         try:
             for _ in range(10):
                 await asyncio.sleep(2)
@@ -889,6 +971,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def _send_cloud_command(self, control_ident: int) -> bool:
         """Send a command via the cloud HTTP gateway."""
+        if not self._cloud_enabled:
+            return False
         session = async_get_clientsession(self.hass)
         url = f"{CLOUD_GATEWAY_URL}/device/control/{self._device_code}"
         params = {
@@ -1034,6 +1118,11 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         Used by the flinx_garage.refresh_state action and the optional periodic
         poll so state can be re-synced on demand when MQTT is unreliable.
         """
+        if not self._cloud_enabled:
+            raise HomeAssistantError(
+                f"Cannot refresh {self._door_alias} from the cloud: the "
+                "connection mode is set to Bluetooth only"
+            )
         info = await self._async_fetch_device_info()
         if info is None:
             raise HomeAssistantError(
@@ -1046,6 +1135,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # Opportunistically (re)establish BLE — doesn't fail the update if it can't.
         if not self.is_ble_connected:
             self._async_start_connect()
+
+        if not self._cloud_enabled:
+            # Bluetooth-only: there is no cloud to fall back to, so the tick is
+            # just the BLE reconnect above. Returning the state we have (rather
+            # than raising) is what keeps the first refresh — and therefore
+            # setup — from failing on a door that hasn't reported yet.
+            return self._build_state()
 
         mqtt_fresh = (
             self.mqtt.is_connected
@@ -1090,6 +1186,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def async_start(self) -> None:
         """Start MQTT connection and kick off first update."""
+        if not self._cloud_enabled:
+            _LOGGER.debug(
+                "Bluetooth-only mode: not connecting to MQTT and not polling the "
+                "cloud for %s", self._door_alias
+            )
+            self._async_start_connect()
+            return
+
         await self.mqtt.connect()
 
         # Optional unconditional periodic cloud poll (off by default).

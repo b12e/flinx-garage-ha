@@ -192,6 +192,7 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         return {
             "ble_connected": self.coordinator.is_ble_connected,
             "mqtt_connected": self.coordinator.mqtt.is_connected,
+            "connection_mode": self.coordinator.connection_mode,
         }
 
     @callback

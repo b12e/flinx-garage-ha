@@ -14,11 +14,13 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from .account import FlinxAccount
 from .const import (
     CONF_BLE_NAME,
+    CONF_CONNECTION_MODE,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
     CONF_DOOR_ALIAS,
     CONF_POLL_INTERVAL,
+    DEFAULT_CONNECTION_MODE,
     DEFAULT_DOOR_ALIAS,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
@@ -40,6 +42,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     devices = entry.data[CONF_DEVICES]
     poll_interval = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+    connection_mode = entry.options.get(
+        CONF_CONNECTION_MODE, DEFAULT_CONNECTION_MODE
+    )
     coordinators: dict[str, FlinxGarageCoordinator] = {
         device[CONF_DEVICE_CODE]: FlinxGarageCoordinator(
             hass,
@@ -53,6 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # only be that door. With more, guessing risks commanding another.
             ble_autodetect=len(devices) == 1,
             poll_interval=poll_interval,
+            connection_mode=connection_mode,
         )
         for device in devices
     }
