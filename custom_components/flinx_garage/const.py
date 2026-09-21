@@ -139,6 +139,34 @@ DEFAULT_DOOR_ALIAS = "F-LINX Garage Door"
 
 # Options-flow keys
 CONF_POLL_INTERVAL = "poll_interval"
+CONF_CONNECTION_MODE = "connection_mode"
+
+# Which transports a command may use, and in which order. BLE is local and fast
+# but only reachable when the opener is in range of an adapter or proxy; the
+# cloud always works while the door is on WiFi, at the cost of a round trip.
+MODE_BLE_ONLY = "ble_only"
+MODE_BLE_PREFERRED = "ble_preferred"
+MODE_CLOUD_PREFERRED = "cloud_preferred"
+MODE_CLOUD_ONLY = "cloud_only"
+
+# Listed most-local first; this is the order the options form shows them in.
+CONNECTION_MODES = [
+    MODE_BLE_ONLY,
+    MODE_BLE_PREFERRED,
+    MODE_CLOUD_PREFERRED,
+    MODE_CLOUD_ONLY,
+]
+# The behaviour the integration had before the mode was configurable, so an
+# entry written without the option keeps working exactly as it did.
+DEFAULT_CONNECTION_MODE = MODE_BLE_PREFERRED
+
+# MODE_BLE_ONLY is the only mode that forbids the cloud outright: no MQTT
+# subscription, no REST poll, no login. The door's position then only ever comes
+# from the replies to commands Home Assistant itself sent.
+CLOUD_DISABLED_MODES = frozenset({MODE_BLE_ONLY})
+# MODE_CLOUD_ONLY leaves the Bluetooth stack entirely inert — no scan, no
+# connect, no reconnect timer — so the adapter's (or proxy's) slot stays free.
+BLE_DISABLED_MODES = frozenset({MODE_CLOUD_ONLY})
 
 # Optional periodic cloud poll (seconds). 0 = off (MQTT-only); default.
 # When set, the coordinator polls the REST API on this cadence regardless of

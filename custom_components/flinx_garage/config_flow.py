@@ -25,16 +25,21 @@ from .account import CannotConnect, FlinxAccount
 from .const import (
     API_KEY_BLE_NAME,
     CONF_BLE_NAME,
+    CONF_CONNECTION_MODE,
     CONF_DEVICE_CODE,
     CONF_DEV_KEY,
     CONF_DEVICES,
     CONF_DOOR_ALIAS,
     CONF_POLL_INTERVAL,
+    CONNECTION_MODES,
+    DEFAULT_CONNECTION_MODE,
     DEFAULT_DOOR_ALIAS,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     ENTRY_VERSION,
+    MODE_BLE_ONLY,
     POLL_INTERVAL_CHOICES,
+    POLL_INTERVAL_OFF,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -215,18 +220,68 @@ class FlinxGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
-    """F-LINX options: the periodic cloud poll, and which doors are configured."""
+    """F-LINX options: the connection mode, the cloud poll, and which doors."""
 
     def __init__(self) -> None:
         self._account_devices: list[dict[str, Any]] = []
 
+    @property
+    def _connection_mode(self) -> str:
+        """The mode currently stored on the entry."""
+        return self.config_entry.options.get(
+            CONF_CONNECTION_MODE, DEFAULT_CONNECTION_MODE
+        )
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Choose which aspect of the integration to configure."""
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=["poll_interval", "devices"],
+        """Choose which aspect of the integration to configure.
+
+        The periodic cloud poll is only offered in a mode that allows the cloud
+        at all — in Bluetooth-only mode there is nothing for it to poll.
+        """
+        menu_options = ["connection_mode"]
+        if self._connection_mode != MODE_BLE_ONLY:
+            menu_options.append("poll_interval")
+        menu_options.append("devices")
+
+        return self.async_show_menu(step_id="init", menu_options=menu_options)
+
+    # -----------------------------------------------------------------
+    # Connection mode
+    # -----------------------------------------------------------------
+
+    async def async_step_connection_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Choose which transports commands and state may use."""
+        if user_input is not None:
+            mode = user_input[CONF_CONNECTION_MODE]
+            options = {**self.config_entry.options, CONF_CONNECTION_MODE: mode}
+            if mode == MODE_BLE_ONLY:
+                # The poll can't run in this mode, so don't leave a value stored
+                # that claims otherwise — it would come back silently on a later
+                # switch to a cloud mode.
+                options[CONF_POLL_INTERVAL] = POLL_INTERVAL_OFF
+            return self.async_create_entry(title="", data=options)
+
+        selector = SelectSelector(
+            SelectSelectorConfig(
+                options=CONNECTION_MODES,
+                mode=SelectSelectorMode.LIST,
+                translation_key=CONF_CONNECTION_MODE,
+            )
+        )
+
+        return self.async_show_form(
+            step_id="connection_mode",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_CONNECTION_MODE, default=self._connection_mode
+                    ): selector,
+                }
+            ),
         )
 
     # -----------------------------------------------------------------
@@ -237,10 +292,18 @@ class FlinxGarageOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Configure the optional periodic cloud poll."""
+        if self._connection_mode == MODE_BLE_ONLY:
+            # Not reachable from the menu, but a re-entered or stale flow could
+            # still land here.
+            return self.async_abort(reason="cloud_disabled")
+
         if user_input is not None:
             return self.async_create_entry(
                 title="",
-                data={CONF_POLL_INTERVAL: int(user_input[CONF_POLL_INTERVAL])},
+                data={
+                    **self.config_entry.options,
+                    CONF_POLL_INTERVAL: int(user_input[CONF_POLL_INTERVAL]),
+                },
             )
 
         current = self.config_entry.options.get(

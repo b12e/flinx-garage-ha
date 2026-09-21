@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Connection mode** option (**Configure → Connection mode**) to choose which connections the integration uses: Bluetooth only, Bluetooth preferred with cloud fallback (the default, unchanged behaviour), cloud preferred with Bluetooth fallback, or cloud only.
+  - **Bluetooth only** never contacts the F-LinX cloud: no MQTT, no polling, no login. The door's position is then only updated by commands Home Assistant sends itself, so a door opened by an RF remote, the wall button or the app goes unnoticed - the options dialog spells this out.
+  - **Cloud only** leaves the Bluetooth stack entirely inert - no scan, no connect, no reconnect timer - which frees the connection slot on your adapter or ESPHome proxy.
+
+### Changed
+- The periodic cloud poll is hidden from the options menu in Bluetooth-only mode, and a stored interval is cleared when switching to it, since there is nothing for it to poll.
+- The cover entity exposes a `connection_mode` attribute.
+
+### Fixed
+- Saving the periodic cloud poll no longer discards the entry's other options.
+
 ## 3.0.1
 
 ### Fixed

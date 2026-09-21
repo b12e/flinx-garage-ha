@@ -15,9 +15,24 @@ Home Assistant (HACS) integration for F-LinX-controlled garage doors.
 - LED light entity (on / off)
 - Operation count sensor
 
-Commands are always sent via Bluetooth first. If BLE is unavailable, the integration falls back to the cloud API automatically.
+By default, commands are sent via Bluetooth first, falling back to the cloud API automatically when BLE is unavailable. You can change this under **Configure → Connection mode** (see below).
 
 One integration entry covers one F-LinX account, with all of its doors. Add or remove doors later under **Configure → Manage devices**.
+
+### Connection mode
+
+**Configure → Connection mode** decides which connections the integration may use. It applies to every door on the account.
+
+| Mode | Commands | State |
+| --- | --- | --- |
+| **Bluetooth only** | Bluetooth only; a command fails if the opener is out of range | Bluetooth command replies only |
+| **Bluetooth preferred, cloud fallback** (default) | Bluetooth, then the cloud | MQTT push, cloud poll and Bluetooth |
+| **Cloud preferred, Bluetooth fallback** | The cloud, then Bluetooth | MQTT push, cloud poll and Bluetooth |
+| **Cloud only** | The cloud only; Bluetooth is switched off entirely | MQTT push and cloud poll |
+
+> **Bluetooth only is fully local** - Home Assistant never contacts the F-LinX cloud, so there is no MQTT push and the periodic cloud poll is switched off and hidden. The door's position is then only updated by commands Home Assistant sends itself: if the door is opened another way - an RF remote, the wall button, the F-LinX app or the auto-close timer - Home Assistant will not see it, and the state stays stale until it next sends a command. The position is also unknown after a restart until the first command.
+
+**Cloud only** frees your Bluetooth adapter's or proxy's connection slot, at the cost of the local position stream, which makes set position less precise.
 
 ### Bluetooth with more than one door
 
