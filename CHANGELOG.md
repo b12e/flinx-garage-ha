@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.1.0b1
 
 ### Added
 - **Connection mode** option (**Configure → Connection mode**) to choose which connections the integration uses: Bluetooth only, Bluetooth preferred with cloud fallback (the default, unchanged behaviour), cloud preferred with Bluetooth fallback, or cloud only.
