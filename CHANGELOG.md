@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.1.1
 
 ### Fixed
 - `aiohttp` is no longer listed in the manifest requirements. It ships with Home Assistant, and hassfest rejects custom integrations that pin it.
