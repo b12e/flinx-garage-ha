@@ -1,6 +1,11 @@
 # Changelog
 
-## 3.1.0b1
+## Unreleased
+
+### Fixed
+- `aiohttp` is no longer listed in the manifest requirements. It ships with Home Assistant, and hassfest rejects custom integrations that pin it.
+
+## 3.1.0
 
 ### Added
 - **Connection mode** option (**Configure → Connection mode**) to choose which connections the integration uses: Bluetooth only, Bluetooth preferred with cloud fallback (the default, unchanged behaviour), cloud preferred with Bluetooth fallback, or cloud only.
