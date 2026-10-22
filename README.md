@@ -47,7 +47,7 @@ You can drive the door to a specific percentage with the cover position slider o
 ## Installation
 
 ### Home Assistant Marketplace (formerly HACS)
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=b12e&repository=flinx-garage-ha&category=integration)
+1. [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=b12e&repository=flinx-garage-ha&category=integration)
 2. Search for "F-LinX Garage Door" and click Download. Follow the on-screen instructions.
 3. Restart Home Assistant
 4. Go to Settings → Devices & services → + Add Integration → F-LinX Garage Door
