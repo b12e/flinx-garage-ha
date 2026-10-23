@@ -4,7 +4,7 @@
 
 ### Added
 - **Native partial open** - a **Partial open** button and a `flinx_garage.partial_open` action that send the opener's own partial / pedestrian command. The door drives to the partial open height and stops by itself (closing down to it when it is further open). Thanks to @m2afx, who added the action and found that the cloud command (4100) works.
-- **Partial open height** select (0-160 cm, the F-LinX app's presets) and **light off delay** number (1-9 minutes). Both are stored in the opener and shared with the app and remotes; changing them never moves the door.
+- **Partial open height** select (0-160 cm, the F-LinX app's presets; shown in inches with the cm alongside when Home Assistant uses US customary units) and **light off delay** number (1-9 minutes). Both are stored in the opener and shared with the app and remotes; changing them never moves the door.
 - Settings are written over the same connections as commands for every connection mode - Bluetooth, the cloud, or either as the fallback - and only count once the opener confirms them.
 
 ### Changed

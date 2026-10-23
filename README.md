@@ -59,7 +59,7 @@ Two settings stored in the opener can be changed from Home Assistant, under the 
 
 | Entity | Values | Notes |
 | --- | --- | --- |
-| **Partial open height** | 0, 2, 4, 8, 12, 20, 40, 60, 80, 100, 120, 140, 160 cm | The heights the F-LinX app offers. Changing it does not move the door. |
+| **Partial open height** | 0, 2, 4, 8, 12, 20, 40, 60, 80, 100, 120, 140, 160 cm | The heights the F-LinX app offers. Changing it does not move the door. With Home Assistant set to US customary units the options read in inches, with the app's cm alongside (e.g. `24 in (60 cm)`). |
 | **Light off delay** | 1-9 minutes | How long the light stays on after the door stops. |
 
 Both are stored in the opener itself, so they are shared with the F-LinX app and with a remote's partial button: whatever you set last, from anywhere, is what the door uses. How far a given height opens your door (as a percentage) depends on the door - on one door 60 cm is 31% and 80 cm is 42%.
