@@ -694,19 +694,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         return await self._send_command(BLE_CMD_STOP, CLOUD_CMD_STOP, target_position=None)
 
     async def async_door_partial(self) -> bool:
-        """Native partial (pedestrian) open: the controller stops at the height set in the F-LINX app.
+        """Native partial (pedestrian) open to the stored partial height.
 
-        Cloud first in the mixed modes: CLOUD_CMD_PARTIAL is decoded from the app, while BLE_CMD_PARTIAL
-        is inferred from the gap in the BLE command table, so BLE is only the fallback here.
+        The controller drives there and stops by itself, closing down to it when
+        the door is already further open.
         """
         self._cancel_position_task()
-        if self._connection_mode in (MODE_BLE_ONLY, MODE_CLOUD_ONLY):
-            return await self._send_command(BLE_CMD_PARTIAL, CLOUD_CMD_PARTIAL, target_position=None)
-        self._last_command_error = None
-        ok = await self._send_cloud_first(BLE_CMD_PARTIAL, CLOUD_CMD_PARTIAL)
-        if ok:
-            self._schedule_post_command_refresh(None)
-        return ok
+        return await self._send_command(BLE_CMD_PARTIAL, CLOUD_CMD_PARTIAL)
 
     async def async_door_set_position(self, position: int) -> bool:
         """Drive the door to a target open percentage (0=closed, 100=open).

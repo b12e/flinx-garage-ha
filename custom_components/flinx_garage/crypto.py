@@ -25,8 +25,9 @@ BLOCK_SIZE = 16
 BLE_CMD_OPEN = 0x01
 BLE_CMD_CLOSE = 0x02
 BLE_CMD_STOP = 0x03
-# Partial (pedestrian) open: the gap in the command table, matching CLOUD_CMD_PARTIAL (4100 = 0x1004).
-# The controller drives to the partial height configured in the F-LINX app and stops on its own.
+# Partial (pedestrian) open, the same as CLOUD_CMD_PARTIAL (4100 = 0x1004). The
+# controller drives to the stored partial height and stops on its own; verified on
+# hardware, and acked like the other commands.
 BLE_CMD_PARTIAL = 0x04
 BLE_CMD_LED_ON = 0x05
 BLE_CMD_LED_OFF = 0x06
