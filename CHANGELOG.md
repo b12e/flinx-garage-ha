@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Native partial open**: a `flinx_garage.partial_open` action that sends the opener's own partial / pedestrian command, so the door drives to the height set in the F-LinX app and stops by itself - no software stop, unlike set position. It uses `CLOUD_CMD_PARTIAL` (4100), which was already decoded but unused, and Bluetooth command `0x04` (the gap in the command table) as the fallback. In the mixed connection modes it goes cloud first, since 4100 is the decoded command; Bluetooth only and cloud only are unchanged. Tested on a BIT-DOOR opener with the partial height set to 160 cm in the app: it stopped at 61%, the same place as the app's own Partial button.
+
 ## 3.1.1
 
 ### Fixed

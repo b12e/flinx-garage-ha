@@ -7,3 +7,13 @@ refresh_state:
     entity:
       integration: flinx_garage
       domain: cover
+
+partial_open:
+  name: Partial open
+  description: >-
+    Open the door to its partial (pedestrian) height, as configured in the F-LINX
+    app. The controller stops at that height by itself.
+  target:
+    entity:
+      integration: flinx_garage
+      domain: cover

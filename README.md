@@ -13,6 +13,7 @@ Home Assistant (HACS) integration for F-LinX-controlled garage doors.
 - **Local commands** via Bluetooth - works without internet
 - **Remote commands** via cloud API - fallback when Bluetooth is not available
 - Garage door cover entity (open / close / stop / set position)
+- Native partial open (`flinx_garage.partial_open`) - the opener's own partial / pedestrian height, as set in the F-LinX app
 - LED light entity (on / off)
 - Operation count sensor
 
@@ -39,7 +40,19 @@ One integration entry covers one F-LinX account, with all of its doors. Add or r
 
 Your account reports which opener belongs to each door, so each door only ever talks to its own opener. With a single door configured, any `Noru_*` / `opener_*` opener in range is used. If a door has no opener reported and more than one door is configured, that door uses the cloud rather than risk sending a command to the wrong door.
 
-### Set position (partial open)
+### Native partial open
+
+`flinx_garage.partial_open` sends the opener's own partial-open command, the same one as the **Partial** button in the F-LinX app. The controller drives to the partial height configured in the app and stops by itself, so nothing in Home Assistant has to watch the position and send a stop.
+
+```yaml
+action: flinx_garage.partial_open
+target:
+  entity_id: cover.garage_door
+```
+
+In the two mixed connection modes it goes to the cloud first (controlIdent 4100, `CLOUD_CMD_PARTIAL`, decoded from the app) and uses Bluetooth command `0x04` as the fallback; Bluetooth only and cloud only behave as for every other command.
+
+### Set position (any percentage)
 
 You can drive the door to a specific percentage with the cover position slider or the `cover.set_cover_position` action.
 
