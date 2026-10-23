@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.2.0
 
 ### Added
 - **Native partial open** - a **Partial open** button and a `flinx_garage.partial_open` action that send the opener's own partial / pedestrian command. The door drives to the partial open height and stops by itself (closing down to it when it is further open). Thanks to @m2afx, who added the action and found that the cloud command (4100) works.
