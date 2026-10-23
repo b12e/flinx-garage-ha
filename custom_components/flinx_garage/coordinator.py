@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -35,7 +35,9 @@ from .const import (
     BLE_DISABLED_MODES,
     ATTR_DOOR_POSITION,
     ATTR_LED_ACTUAL,
+    ATTR_LED_OFF_DELAY,
     ATTR_OPERATED_CYCLES,
+    ATTR_PARTIAL_LEVEL,
     BLE_ACK_TIMEOUT,
     BLE_COMMAND_CONNECT_WAIT,
     BLE_CONNECT_TIMEOUT,
@@ -58,10 +60,14 @@ from .const import (
     DOOR_STATE_CLOSED,
     DOOR_STATE_OPEN,
     DOMAIN,
+    LED_OFF_DELAY_MAX,
+    LED_OFF_DELAY_MIN,
+    LED_OFF_DELAY_SCALE,
     MODE_BLE_ONLY,
     MODE_CLOUD_ONLY,
     MODE_CLOUD_PREFERRED,
     MQTT_STALE_THRESHOLD,
+    PARTIAL_LEVELS_CM,
     POSITION_LEAD_TIME,
     POSITION_LEAD_TIME_LOCAL,
     POSITION_LOCAL_MAX_AGE,
@@ -80,13 +86,20 @@ from .crypto import (
     BLE_CMD_OPEN,
     BLE_CMD_PARTIAL,
     BLE_CMD_STOP,
+    BLE_MSG_ATTR_WRITE,
+    BleAck,
+    build_ble_attr_write,
     build_ble_auth,
     build_ble_command,
+    parse_ble_ack,
     unwrap_ble_frame,
 )
 from .mqtt_client import FlinxMqttClient, parse_attr_report
 
 _LOGGER = logging.getLogger(__name__)
+
+# One attempt over one transport: True once the door has confirmed it.
+_Send = Callable[[], Awaitable[bool]]
 
 
 def _is_flinx_name(name: str | None) -> bool:
@@ -159,6 +172,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # the user can act on, so they must not be swallowed into a False.
         self._last_command_error: str | None = None
         self._last_notification: bytes | None = None
+        # The door's short reply to the last frame written, kept apart from the
+        # attribute reports that follow it.
+        self._last_ble_ack: BleAck | None = None
         self._post_command_refresh: asyncio.Task[None] | None = None
         self._position_task: asyncio.Task[None] | None = None
 
@@ -175,6 +191,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._position_ts: float = 0.0
         self.led_state: bool | None = None         # True=on, False=off
         self.operated_cycles: int | None = None
+        # Stored settings, as the door reports them.
+        self.partial_level: int | None = None      # index into PARTIAL_LEVELS_CM
+        self.led_off_delay: int | None = None      # minutes
         self.is_ble_connected: bool = False
         self.firmware_version: str | None = None
         self.is_online: bool | None = None
@@ -243,6 +262,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self.operated_cycles = cycles
             changed = True
 
+        changed |= self._apply_settings(attrs)
         self.is_online = True
 
         if changed:
@@ -255,6 +275,26 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             )
             # Push the new state to entities
             self.async_set_updated_data(self._build_state())
+
+    @callback
+    def _apply_settings(self, attrs: dict[int, Any]) -> bool:
+        """Take the stored settings from a report. True if either changed."""
+        changed = False
+        level = attrs.get(ATTR_PARTIAL_LEVEL)
+        if (
+            isinstance(level, int)
+            and 0 <= level < len(PARTIAL_LEVELS_CM)
+            and level != self.partial_level
+        ):
+            self.partial_level = level
+            changed = True
+        delay = attrs.get(ATTR_LED_OFF_DELAY)
+        if isinstance(delay, int) and delay % LED_OFF_DELAY_SCALE == 0:
+            minutes = delay // LED_OFF_DELAY_SCALE
+            if LED_OFF_DELAY_MIN <= minutes <= LED_OFF_DELAY_MAX and minutes != self.led_off_delay:
+                self.led_off_delay = minutes
+                changed = True
+        return changed
 
     @staticmethod
     def _report_ts(attrs: dict[int, Any], source: str) -> float | None:
@@ -328,6 +368,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             "door_position": self.door_position,
             "led_state": self.led_state,
             "operated_cycles": self.operated_cycles,
+            "partial_level": self.partial_level,
+            "led_off_delay": self.led_off_delay,
             "online": self.is_online,
             "firmware": self.firmware_version,
             "mqtt_connected": self.mqtt.is_connected,
@@ -359,6 +401,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         if plaintext is None:
             return
         self._ble_frame.clear()
+        if ack := parse_ble_ack(plaintext):
+            self._last_ble_ack = ack
+            return
         if attrs := parse_attr_report(plaintext):
             _LOGGER.debug("BLE attr report: %s", attrs)
             self._apply_attrs(attrs)
@@ -582,6 +627,53 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         (the auth/command format is reverse-engineered). Without an ack we
         return False so the caller falls back to the cloud command.
         """
+        if not await self._write_ble_frame(
+            lambda key: build_ble_command(ble_cmd_id, key)
+        ):
+            return False
+
+        # Wait (outside the write lock) for an acknowledgement notification.
+        acked = await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
+        if acked:
+            _LOGGER.debug("BLE command acked: %s", self._last_notification.hex())
+            return True
+        _LOGGER.debug("BLE command sent but no ack within %ss", BLE_ACK_TIMEOUT)
+        return False
+
+    async def _send_ble_attr(self, attr: int, value: int) -> bool:
+        """Write one stored setting over BLE, confirmed by the door's own ack.
+
+        Unlike a command, the reply is checked rather than any notification
+        taken as success: the ack echoes the message type and carries a status,
+        and a write the opener refused must not read as a setting changed.
+        """
+        if not await self._write_ble_frame(
+            lambda key: build_ble_attr_write(attr, value, key)
+        ):
+            return False
+
+        deadline = self.hass.loop.time() + BLE_ACK_TIMEOUT
+        while self.hass.loop.time() < deadline:
+            ack = self._last_ble_ack
+            if ack is not None and ack.msg_type == BLE_MSG_ATTR_WRITE:
+                if ack.ok:
+                    _LOGGER.debug("BLE attr 0x%04x=%s acked", attr, value)
+                    return True
+                _LOGGER.debug("BLE attr 0x%04x=%s refused: %s", attr, value, ack)
+                self._last_command_error = (
+                    "the opener refused the setting over Bluetooth"
+                )
+                return False
+            await asyncio.sleep(0.05)
+        _LOGGER.debug("BLE attr write sent but no ack within %ss", BLE_ACK_TIMEOUT)
+        return False
+
+    async def _write_ble_frame(self, build: Callable[[bytes], bytes]) -> bool:
+        """Write one frame on the live link. False if there was nothing to write on.
+
+        ``build`` gets the device key and returns the frame; it runs under the
+        command lock, just before the write.
+        """
         if not self._ble_enabled:
             return False
 
@@ -611,9 +703,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 # only sees a response triggered by this command. Auth was sent
                 # once at connect time, so we only write the command frame here.
                 self._last_notification = None
-                cmd_frame = build_ble_command(ble_cmd_id, dev_key)
+                self._last_ble_ack = None
                 async with asyncio.timeout(BLE_WRITE_TIMEOUT):
-                    await client.write_gatt_char(BLE_WRITE_CHAR, cmd_frame)
+                    await client.write_gatt_char(BLE_WRITE_CHAR, build(dev_key))
             # Deliberately broad: BLE is the optimisation, the cloud is the
             # fallback, so nothing on this path may fail the user's action. A
             # proxy raises its own transport errors (e.g. aioesphomeapi's
@@ -627,14 +719,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 # next command starts from a fresh connect.
                 await self._teardown_ble_client()
                 return False
-
-        # Wait (outside the write lock) for an acknowledgement notification.
-        acked = await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
-        if acked:
-            _LOGGER.debug("BLE command acked: %s", self._last_notification.hex())
-            return True
-        _LOGGER.debug("BLE command sent but no ack within %ss", BLE_ACK_TIMEOUT)
-        return False
+        return True
 
     @callback
     def _async_start_connect(self) -> asyncio.Task[bool] | None:
@@ -848,6 +933,37 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(self._build_state())
         return ok
 
+    async def async_set_partial_level(self, level: int) -> bool:
+        """Store the partial open height (an index into PARTIAL_LEVELS_CM).
+
+        Only the setting changes; the door does not move until a partial open.
+        """
+        if not 0 <= level < len(PARTIAL_LEVELS_CM):
+            raise ValueError(f"partial level {level} is out of range")
+        if not await self._set_attribute(ATTR_PARTIAL_LEVEL, level):
+            return False
+        self.partial_level = level
+        self.async_set_updated_data(self._build_state())
+        return True
+
+    async def async_set_led_off_delay(self, minutes: int) -> bool:
+        """Store how long the light stays on after the door stops."""
+        if not LED_OFF_DELAY_MIN <= minutes <= LED_OFF_DELAY_MAX:
+            raise ValueError(f"LED off delay {minutes} min is out of range")
+        # Written in minutes; the door reports it back as minutes x 10.
+        if not await self._set_attribute(ATTR_LED_OFF_DELAY, minutes):
+            return False
+        self.led_off_delay = minutes
+        self.async_set_updated_data(self._build_state())
+        return True
+
+    async def _set_attribute(self, attr: int, value: int) -> bool:
+        """Write a stored setting over the transports the connection mode allows."""
+        return await self._send_via(
+            lambda: self._send_ble_attr(attr, value),
+            lambda: self._send_cloud_attr(attr, value),
+        )
+
     async def _send_command(
         self,
         ble_cmd_id: int,
@@ -855,30 +971,38 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         target_position: int | None = None,
     ) -> bool:
         """Send a command over the transports the connection mode allows."""
-        self._last_command_error = None
-
-        if self._connection_mode == MODE_BLE_ONLY:
-            ok = await self._send_ble_only(ble_cmd_id)
-        elif self._connection_mode == MODE_CLOUD_ONLY:
-            ok = await self._send_cloud_command(cloud_control_ident)
-        elif self._connection_mode == MODE_CLOUD_PREFERRED:
-            ok = await self._send_cloud_first(ble_cmd_id, cloud_control_ident)
-        else:
-            ok = await self._send_ble_first(ble_cmd_id, cloud_control_ident)
-
+        ok = await self._send_via(
+            lambda: self._send_ble_command(ble_cmd_id),
+            lambda: self._send_cloud_command(cloud_control_ident),
+        )
         if ok:
             self._schedule_post_command_refresh(target_position)
         return ok
 
-    async def _send_ble_first(self, ble_cmd_id: int, cloud_control_ident: int) -> bool:
+    async def _send_via(self, ble: _Send, cloud: _Send) -> bool:
+        """Run one action over the transports the connection mode allows.
+
+        Commands and attribute writes share this, so a setting written from
+        Home Assistant obeys the mode exactly like opening the door does.
+        """
+        self._last_command_error = None
+
+        if self._connection_mode == MODE_BLE_ONLY:
+            return await self._send_ble_only(ble)
+        if self._connection_mode == MODE_CLOUD_ONLY:
+            return await cloud()
+        if self._connection_mode == MODE_CLOUD_PREFERRED:
+            return await self._send_cloud_first(ble, cloud)
+        return await self._send_ble_first(ble, cloud)
+
+    async def _send_ble_first(self, ble: _Send, cloud: _Send) -> bool:
         """BLE, then cloud, then BLE again once a connect has had time to land."""
-        if await self._send_ble_command(ble_cmd_id):
+        if await ble():
             _LOGGER.debug("BLE command confirmed (ack)")
             return True
 
         _LOGGER.debug("BLE unavailable/unconfirmed, falling back to cloud command")
-        ok = await self._send_cloud_command(cloud_control_ident)
-        if ok:
+        if await cloud():
             return True
 
         # The cloud refuses while the door is off WiFi, but the opener is still
@@ -886,42 +1010,42 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # so let local control have the last word.
         _LOGGER.debug("Cloud command failed; waiting for BLE to retry locally")
         if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
-            if await self._send_ble_command(ble_cmd_id):
+            if await ble():
                 _LOGGER.debug("BLE command confirmed (ack) after cloud failure")
                 self._last_command_error = None
                 return True
         return False
 
-    async def _send_cloud_first(self, ble_cmd_id: int, cloud_control_ident: int) -> bool:
+    async def _send_cloud_first(self, ble: _Send, cloud: _Send) -> bool:
         """Cloud, then BLE — the mirror of _send_ble_first.
 
         The door can be on WiFi but slow to answer, or off it entirely, so a
         refused cloud command still gets the local path as a second chance.
         """
-        if await self._send_cloud_command(cloud_control_ident):
+        if await cloud():
             return True
 
         _LOGGER.debug("Cloud command failed; falling back to BLE")
         if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
-            if await self._send_ble_command(ble_cmd_id):
+            if await ble():
                 _LOGGER.debug("BLE command confirmed (ack) after cloud failure")
                 self._last_command_error = None
                 return True
         return False
 
-    async def _send_ble_only(self, ble_cmd_id: int) -> bool:
+    async def _send_ble_only(self, ble: _Send) -> bool:
         """BLE, with one retry after waiting for a connect. Never the cloud.
 
         Unlike the mixed modes there is nothing to fall back to, so it is worth
         paying the connect wait up front rather than failing on a link that was
         about to come up.
         """
-        if await self._send_ble_command(ble_cmd_id):
+        if await ble():
             _LOGGER.debug("BLE command confirmed (ack)")
             return True
 
         if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
-            if await self._send_ble_command(ble_cmd_id):
+            if await ble():
                 _LOGGER.debug("BLE command confirmed (ack) after waiting for connect")
                 return True
 
@@ -982,14 +1106,28 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def _send_cloud_command(self, control_ident: int) -> bool:
         """Send a command via the cloud HTTP gateway."""
+        return await self._cloud_gateway_get(
+            "control", {"controlIdent": control_ident}
+        )
+
+    async def _send_cloud_attr(self, attr: int, value: int) -> bool:
+        """Write a stored setting via the cloud HTTP gateway.
+
+        The gateway relays it to the door as an attribute write; it answers
+        "not support attr ident" for a code it doesn't know, so a wrong code
+        fails safely.
+        """
+        return await self._cloud_gateway_get(
+            "attr", {"attrIdent": attr, "attrValue": value}
+        )
+
+    async def _cloud_gateway_get(self, kind: str, query: dict[str, int]) -> bool:
+        """GET /device/<kind>/<code> on the gateway. True once the door accepted it."""
         if not self._cloud_enabled:
             return False
         session = async_get_clientsession(self.hass)
-        url = f"{CLOUD_GATEWAY_URL}/device/control/{self._device_code}"
-        params = {
-            "timestamp": int(time.time()),
-            "controlIdent": control_ident,
-        }
+        url = f"{CLOUD_GATEWAY_URL}/device/{kind}/{self._device_code}"
+        params = {"timestamp": int(time.time()), **query}
         headers = {
             "Accept-Language": "en",
             "Api-Version": API_VERSION,
@@ -1007,7 +1145,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("code") == 200:
-                            _LOGGER.debug("Cloud command OK (controlIdent=%s)", control_ident)
+                            _LOGGER.debug("Cloud %s OK (%s)", kind, query)
                             return True
                         msg = data.get("msg", "unknown error")
                         # Re-auth and retry on token/auth errors
@@ -1106,6 +1244,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 if new_led_state != self.led_state:
                     self.led_state = new_led_state
                     changed = True
+            elif code in (ATTR_PARTIAL_LEVEL, ATTR_LED_OFF_DELAY):
+                changed |= self._apply_settings({code: value})
 
         firmware_version = info.get("firmwareVersion")
         if firmware_version != self.firmware_version:

@@ -15,6 +15,7 @@ import hashlib
 import struct
 import time
 import zlib
+from dataclasses import dataclass
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -31,6 +32,56 @@ BLE_CMD_STOP = 0x03
 BLE_CMD_PARTIAL = 0x04
 BLE_CMD_LED_ON = 0x05
 BLE_CMD_LED_OFF = 0x06
+
+# Message types: the two bytes after the header. The door echoes the type in its
+# reply (``04 06 <sep> <type:2> <status>``), as it does on MQTT service/up.
+BLE_MSG_ATTR_WRITE = 0x0001
+BLE_MSG_CONTROL = 0x0005
+BLE_ACK_STATUS_OK = 0x01
+# The header byte an attribute write carries where a command carries 2*cmd.
+# Verified on hardware: the door acks ``04 06 02 00 01 01`` and reports the value.
+BLE_ATTR_WRITE_SEP = 0x02
+
+
+@dataclass(frozen=True)
+class BleAck:
+    """The door's short reply to a frame it received."""
+
+    sep: int
+    msg_type: int
+    status: int
+
+    @property
+    def ok(self) -> bool:
+        return self.status == BLE_ACK_STATUS_OK
+
+
+def parse_ble_ack(plaintext: bytes) -> BleAck | None:
+    """Decode a decrypted ack (``04 06 <sep> <type:2> <status>``), or None."""
+    if len(plaintext) < 6 or plaintext[:2] != b"\x04\x06":
+        return None
+    return BleAck(
+        sep=plaintext[2],
+        msg_type=struct.unpack(">H", plaintext[3:5])[0],
+        status=plaintext[5],
+    )
+
+
+def build_ble_attr_write(attr: int, value: int, dev_key: bytes) -> bytes:
+    """Build the frame that writes one stored setting (e.g. the partial height).
+
+    The same body the cloud sends the door on MQTT service/down for
+    ``/device/attr?attrIdent=<attr>&attrValue=<value>``: message type 0x0001,
+    the attribute code, then the one-byte value twice.
+    """
+    if not 0 <= value <= 0xFF:
+        raise ValueError(f"attribute value {value} does not fit in a byte")
+    plaintext = (
+        bytes([0x03, 0x06, BLE_ATTR_WRITE_SEP])
+        + struct.pack(">HH", BLE_MSG_ATTR_WRITE, attr)
+        + bytes([value, value])
+    )
+    return _ble_frame(plaintext, dev_key)
 
 
 def build_ble_command(cmd_id: int, dev_key: bytes) -> bytes:
