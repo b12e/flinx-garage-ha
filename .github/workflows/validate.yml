@@ -1,7 +1,10 @@
 name: Validate
 
 on:
+  # Branch pushes are already covered by their pull request; validating them
+  # again on push only doubled every check.
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "0 0 * * *"
