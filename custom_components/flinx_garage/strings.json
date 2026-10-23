@@ -76,6 +76,10 @@
     "refresh_state": {
       "name": "Refresh state",
       "description": "Force an immediate state read from the F-LINX cloud API, bypassing MQTT. Useful in automations when MQTT push updates are unreliable."
+    },
+    "partial_open": {
+      "name": "Partial open",
+      "description": "Drive the door to its partial (pedestrian) height, set with the Partial open height entity or the F-LINX app. The controller stops at that height by itself."
     }
   },
   "selector": {

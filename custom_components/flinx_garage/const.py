@@ -56,11 +56,9 @@ BLE_CONNECT_TIMEOUT = 30  # seconds
 
 # Attribute codes observed in MQTT attr/up reports (0x27XX big-endian)
 ATTR_DEVICE_NAME = 9984         # 0x2700, NUL-terminated Bluetooth name
-ATTR_DOOR_CONTROL = 10001       # Door control state
-ATTR_LED_TIMER = 10002
-ATTR_AUTO_CLOSE_DELAY = 10003
-ATTR_AUTO_CLOSE_ENABLED = 10004
-ATTR_LED_ENABLED = 10005        # LED feature enabled (always 1, NOT actual light state)
+ATTR_PARTIAL_LEVEL = 10001      # Partial open height, index into PARTIAL_LEVELS_CM
+ATTR_LED_OFF_DELAY = 10003      # Light auto-off delay: written in minutes, reported x 10
+ATTR_MOTION_STATE = 10005       # 0x03 starting, 0x00 moving, 0x01 at rest
 ATTR_OPERATED_CYCLES = 10006    # 2-byte cumulative counter
 ATTR_MOTOR_BASELINE = 10010     # 2-byte motor force baseline
 ATTR_DOOR_POSITION = 10012      # 0-100% door position — PRIMARY state
@@ -77,6 +75,13 @@ ATTR_SIZE_STR = {ATTR_DEVICE_NAME}
 ATTR_CODE_MIN = 0x2700          # 9984
 ATTR_CODE_MAX = 0x2724          # 10020
 ATTR_STATE_CODE_MIN = 0x2709    # 9993
+
+# Writable settings. The opener stores the partial height as a level, the index
+# into the heights the F-LINX app offers; the % each one reaches depends on the door.
+PARTIAL_LEVELS_CM = (0, 2, 4, 8, 12, 20, 40, 60, 80, 100, 120, 140, 160)
+LED_OFF_DELAY_MIN = 1  # minutes
+LED_OFF_DELAY_MAX = 9  # minutes
+LED_OFF_DELAY_SCALE = 10  # reports carry minutes x 10
 
 # Door states
 DOOR_STATE_CLOSED = 0
@@ -180,7 +185,7 @@ POLL_INTERVAL_CHOICES = [0, 60, 120, 180, 240, 300, 600, 900, 1800, 3600]
 CLOUD_CMD_OPEN = 4097
 CLOUD_CMD_CLOSE = 4098
 CLOUD_CMD_STOP = 4099
-CLOUD_CMD_PARTIAL = 4100    # Pedestrian/partial open (~20cm)
+CLOUD_CMD_PARTIAL = 4100    # Partial open to the stored height (ATTR_PARTIAL_LEVEL)
 CLOUD_CMD_LED_ON = 4101
 CLOUD_CMD_LED_OFF = 4102
 

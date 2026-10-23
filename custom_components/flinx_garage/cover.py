@@ -55,6 +55,9 @@ async def async_setup_entry(
     platform.async_register_entity_service(
         "refresh_state", None, "async_refresh_state"
     )
+    platform.async_register_entity_service(
+        "partial_open", None, "async_partial_open"
+    )
 
 
 class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
@@ -225,6 +228,13 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         if not await self.coordinator.async_door_stop():
             raise self.coordinator.command_error("stop the door")
         self._set_commanded_direction(0)
+
+    async def async_partial_open(self) -> None:
+        """Native partial open (flinx_garage.partial_open action)."""
+        if not await self.coordinator.async_door_partial():
+            raise self.coordinator.command_error("partially open the door")
+        current = self.coordinator.door_position
+        self._set_commanded_direction(1 if current == 0 else 0)
 
     async def async_refresh_state(self) -> None:
         """Force a cloud API state refresh (flinx_garage.refresh_state action)."""
