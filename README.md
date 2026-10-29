@@ -17,6 +17,7 @@ Home Assistant (HACS) integration for F-LinX-controlled garage doors.
 - **Partial open height** - choose that height from Home Assistant (0-160 cm, the same presets as the F-LinX app)
 - LED light entity (on / off), and its **light off delay** (1-9 minutes)
 - Operation count sensor
+- **Connection** and **Bluetooth connected** diagnostic sensors (disabled by default) - see which connection commands go out over
 
 By default, commands are sent via Bluetooth first, falling back to the cloud API automatically when BLE is unavailable. You can change this under **Configure → Connection mode** (see below).
 
@@ -36,6 +37,19 @@ One integration entry covers one F-LinX account, with all of its doors. Add or r
 > **Bluetooth only is fully local** - Home Assistant never contacts the F-LinX cloud, so there is no MQTT push and the periodic cloud poll is switched off and hidden. The door's position is then only updated by commands Home Assistant sends itself: if the door is opened another way - an RF remote, the wall button, the F-LinX app or the auto-close timer - Home Assistant will not see it, and the state stays stale until it next sends a command. The position is also unknown after a restart until the first command.
 
 **Cloud only** frees your Bluetooth adapter's or proxy's connection slot, at the cost of the local position stream, which makes set position less precise.
+
+If the internet or the F-LinX cloud goes down, the mixed modes keep the door available as long as the Bluetooth link is up, and commands keep working over it. Home Assistant also starts normally during an outage in that case, and MQTT reconnects by itself once the internet is back.
+
+### Checking which connection is used
+
+Two diagnostic entities show what the integration is doing. They are disabled by default: enable them on the door's device page under **Diagnostic**.
+
+| Entity | Shows |
+| --- | --- |
+| **Connection** | What the next command goes out over: **Bluetooth**, **Cloud**, or **Not connected** (Bluetooth only, with the link down). Its attributes add the connection mode and what the last confirmed command actually went over. |
+| **Bluetooth connected** | On while an authenticated Bluetooth link to the opener is up. |
+
+In **Bluetooth preferred** mode, **Connection** reads **Cloud** exactly when the Bluetooth link is down. If it stays that way, check **Settings → System → Logs** for `BLE unavailable for <door>`, which says why (for example an opener that is out of range or a proxy that is passive-only).
 
 ### Bluetooth with more than one door
 
