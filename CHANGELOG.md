@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- The manifest now lists the `blinds_curtains` category (the one that covers garage doors and gates), so the integration shows up in the right place when browsing Home Assistant Marketplace / HACS.
+
 ## 3.2.0
 
 ### Added
