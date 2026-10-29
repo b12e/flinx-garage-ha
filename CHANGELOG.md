@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.0
 
 ### Added
 - **Connection** diagnostic sensor showing what the next command goes out over - Bluetooth, the cloud, or not connected - with the connection mode and what the last confirmed command used as attributes ([#25](https://github.com/b12e/flinx-garage-ha/issues/25)).
