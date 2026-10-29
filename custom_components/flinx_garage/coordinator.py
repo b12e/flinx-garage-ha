@@ -77,6 +77,9 @@ from .const import (
     POSITION_TIMEOUT,
     POSITION_TOLERANCE,
     REPORT_TS_SANITY,
+    TRANSPORT_BLE,
+    TRANSPORT_CLOUD,
+    TRANSPORT_NONE,
 )
 from .account import FlinxAccount
 from .crypto import (
@@ -195,6 +198,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self.partial_level: int | None = None      # index into PARTIAL_LEVELS_CM
         self.led_off_delay: int | None = None      # minutes
         self.is_ble_connected: bool = False
+        # TRANSPORT_BLE or TRANSPORT_CLOUD: what the door last confirmed a
+        # command or setting over. None until the first one.
+        self.last_command_via: str | None = None
         self.firmware_version: str | None = None
         self.is_online: bool | None = None
         self.last_mqtt_ts: float = 0.0
@@ -221,6 +227,33 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     def connection_mode(self) -> str:
         """Which transports this door is allowed to use."""
         return self._connection_mode
+
+    @property
+    def command_transport(self) -> str:
+        """What the next command will go out over first.
+
+        A mixed mode only falls back when its first choice fails, so this is the
+        first choice as things stand: for Bluetooth preferred it is the cloud
+        exactly when the BLE link is down, which is what the user can act on.
+        """
+        if self._connection_mode in (MODE_CLOUD_ONLY, MODE_CLOUD_PREFERRED):
+            return TRANSPORT_CLOUD
+        if self.is_ble_connected:
+            return TRANSPORT_BLE
+        return TRANSPORT_CLOUD if self._cloud_enabled else TRANSPORT_NONE
+
+    @callback
+    def _set_ble_connected(self, connected: bool) -> None:
+        """Record the BLE link state and show it on the entities at once.
+
+        The link comes and goes between coordinator ticks, so without the push
+        the diagnostic entities would lag it by up to a minute.
+        """
+        if connected == self.is_ble_connected:
+            return
+        self.is_ble_connected = connected
+        if not self._closing:
+            self.async_update_listeners()
 
     # -----------------------------------------------------------------
     # Inbound state (MQTT attr/up and BLE command replies share a format)
@@ -481,7 +514,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                     )
                 await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
 
-            self.is_ble_connected = True
+            self._set_ble_connected(True)
             _LOGGER.debug(
                 "BLE connected and authenticated to %s (auth resp: %s)",
                 ble_device.address,
@@ -602,7 +635,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     async def _teardown_ble_client(self) -> None:
         """Drop a half-open client so the proxy connection slot is freed."""
         client, self._ble_client = self._ble_client, None
-        self.is_ble_connected = False
+        self._set_ble_connected(False)
         if client is not None:
             try:
                 await client.disconnect()
@@ -610,7 +643,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 pass
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
-        self.is_ble_connected = False
+        self._set_ble_connected(False)
         self._ble_client = None
         if self._closing:
             _LOGGER.debug("BLE disconnected during shutdown")
@@ -986,6 +1019,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         Home Assistant obeys the mode exactly like opening the door does.
         """
         self._last_command_error = None
+        ble = self._recording(ble, TRANSPORT_BLE)
+        cloud = self._recording(cloud, TRANSPORT_CLOUD)
 
         if self._connection_mode == MODE_BLE_ONLY:
             return await self._send_ble_only(ble)
@@ -994,6 +1029,19 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         if self._connection_mode == MODE_CLOUD_PREFERRED:
             return await self._send_cloud_first(ble, cloud)
         return await self._send_ble_first(ble, cloud)
+
+    def _recording(self, send: _Send, transport: str) -> _Send:
+        """Wrap one transport's attempt so a confirmed one is remembered."""
+
+        async def attempt() -> bool:
+            if not await send():
+                return False
+            if transport != self.last_command_via:
+                self.last_command_via = transport
+                self.async_update_listeners()
+            return True
+
+        return attempt
 
     async def _send_ble_first(self, ble: _Send, cloud: _Send) -> bool:
         """BLE, then cloud, then BLE again once a connect has had time to land."""
@@ -1309,9 +1357,20 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         info = await self._async_fetch_device_info()
 
         if info is None:
-            # Don't flap entities if we just can't reach the API —
-            # UpdateFailed will mark them unavailable after several failures.
-            raise UpdateFailed("MQTT and API both unreachable")
+            # The internet is down or the cloud is, but the opener may still be
+            # right there over BLE. UpdateFailed would mark every entity
+            # unavailable — and fail setup outright on a restart during the
+            # outage — leaving the user no way to send the command that would
+            # work. So only give up when BLE can't carry commands either. The
+            # wait covers the first refresh, where the connect has only just
+            # been started above; on later ticks the link is usually up already.
+            if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
+                _LOGGER.debug(
+                    "Cloud unreachable for %s; staying available over BLE",
+                    self._door_alias,
+                )
+                return self._build_state()
+            raise UpdateFailed("MQTT, the cloud API and Bluetooth are all unreachable")
 
         self._apply_device_info(info, push_update=False)
 

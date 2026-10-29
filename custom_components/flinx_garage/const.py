@@ -173,6 +173,14 @@ CLOUD_DISABLED_MODES = frozenset({MODE_BLE_ONLY})
 # connect, no reconnect timer — so the adapter's (or proxy's) slot stays free.
 BLE_DISABLED_MODES = frozenset({MODE_CLOUD_ONLY})
 
+# What a command goes out over, as the Connection sensor reports it.
+# TRANSPORT_NONE is only reachable in MODE_BLE_ONLY: the link is down and there
+# is no cloud to fall back to.
+TRANSPORT_BLE = "bluetooth"
+TRANSPORT_CLOUD = "cloud"
+TRANSPORT_NONE = "disconnected"
+TRANSPORTS = [TRANSPORT_BLE, TRANSPORT_CLOUD, TRANSPORT_NONE]
+
 # Optional periodic cloud poll (seconds). 0 = off (MQTT-only); default.
 # When set, the coordinator polls the REST API on this cadence regardless of
 # MQTT freshness, recovering state that MQTT silently dropped.

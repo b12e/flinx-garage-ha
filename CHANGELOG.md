@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- **Connection** diagnostic sensor showing what the next command goes out over - Bluetooth, the cloud, or not connected - with the connection mode and what the last confirmed command used as attributes ([#25](https://github.com/b12e/flinx-garage-ha/issues/25)).
+- **Bluetooth connected** diagnostic binary sensor, on while an authenticated Bluetooth link to the opener is up.
+- Both are disabled by default; enable them on the door's device page under **Diagnostic**.
+
+### Fixed
+- In **Bluetooth preferred** and **Cloud preferred** mode, an internet or F-LinX cloud outage no longer makes the door unavailable while the Bluetooth link is up, and Home Assistant no longer fails to set the integration up when it starts during one. Before, the only way to keep local control through an outage was to switch to **Bluetooth only** ([#25](https://github.com/b12e/flinx-garage-ha/issues/25)).
+- MQTT now keeps retrying when Home Assistant starts while the broker is unreachable, instead of staying disconnected until the next restart.
+
 ### Changed
 - The manifest now lists the `blinds_curtains` category (the one that covers garage doors and gates), so the integration shows up in the right place when browsing Home Assistant Marketplace / HACS.
 

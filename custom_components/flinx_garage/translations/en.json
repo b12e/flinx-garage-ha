@@ -91,5 +91,34 @@
         "cloud_only": "Cloud only"
       }
     }
+  },
+  "entity": {
+    "binary_sensor": {
+      "ble_connected": {
+        "name": "Bluetooth connected"
+      }
+    },
+    "sensor": {
+      "connection": {
+        "name": "Connection",
+        "state": {
+          "bluetooth": "Bluetooth",
+          "cloud": "Cloud",
+          "disconnected": "Not connected"
+        },
+        "state_attributes": {
+          "connection_mode": {
+            "name": "Connection mode"
+          },
+          "last_command_via": {
+            "name": "Last command via",
+            "state": {
+              "bluetooth": "Bluetooth",
+              "cloud": "Cloud"
+            }
+          }
+        }
+      }
+    }
   }
 }

@@ -207,15 +207,15 @@ class FlinxMqttClient:
         return self._last_message_ts
 
     async def connect(self) -> None:
-        """Connect and start the network loop in paho's internal thread."""
+        """Connect and start the network loop in paho's internal thread.
+
+        The connect itself happens on that thread, which keeps retrying until
+        the broker answers. A blocking connect that gave up on its first OSError
+        would leave a Home Assistant started during an internet outage without
+        MQTT for good, now that setup no longer fails when Bluetooth is up.
+        """
         _LOGGER.debug("Connecting to MQTT broker %s:%d", MQTT_BROKER, MQTT_PORT)
-        try:
-            await self._loop.run_in_executor(
-                None, self._client.connect, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
-            )
-        except OSError as err:
-            _LOGGER.warning("MQTT connect failed: %s", err)
-            return
+        self._client.connect_async(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
         self._client.loop_start()
 
     async def disconnect(self) -> None:
