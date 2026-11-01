@@ -38,7 +38,7 @@ One integration entry covers one F-LinX account, with all of its doors. Add or r
 
 **Cloud only** frees your Bluetooth adapter's or proxy's connection slot, at the cost of the local position stream, which makes set position less precise.
 
-If the internet or the F-LinX cloud goes down, the mixed modes keep the door available as long as the Bluetooth link is up, and commands keep working over it. Home Assistant also starts normally during an outage in that case, and MQTT reconnects by itself once the internet is back.
+When the Bluetooth link drops, the integration reconnects as soon as the opener is seen advertising again. If the internet or the F-LinX cloud goes down, the mixed modes keep the door available as long as the Bluetooth link is up, and commands keep working over it. Home Assistant also starts normally during an outage in that case, and MQTT reconnects by itself once the internet is back.
 
 ### Checking which connection is used
 

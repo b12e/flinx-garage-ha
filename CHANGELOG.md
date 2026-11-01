@@ -6,6 +6,9 @@
 - Bluetooth reconnects no longer trip over themselves on adapters that report a disconnect for every failed connection attempt (seen with BlueZ / USB adapters). A late report from an earlier attempt dropped the link being set up, which failed the connect and could leave the new connection open, holding the adapter's slot while the integration fell back to the cloud ([#25](https://github.com/b12e/flinx-garage-ha/issues/25)).
 - **Bluetooth connected** and **Connection** no longer show Bluetooth while there is no link. A link that dropped during the authentication handshake was still marked connected, and the periodic reconnect never ran while it was.
 - A Bluetooth connection that fails partway is now always closed, and Home Assistant shutting down mid-connect no longer leaves one open.
+- After a drop, the integration reconnects the moment the opener is seen advertising again. A connected opener doesn't advertise and Home Assistant forgets a device it hasn't heard from in a few minutes, so after a longer connection the retry 10 seconds after a drop found nothing (`BLE unavailable for <door>: opener ... is not connectable`) and the next try was up to a minute away.
+- A failed connection attempt is retried after 10 seconds again. Before, that retry only happened by accident, through the disconnect reports that are now ignored.
+- Removed a call to `BleakClient.get_services()`, which no longer exists in the bleak that current Home Assistant ships.
 
 ## 3.3.0
 

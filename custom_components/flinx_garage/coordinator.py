@@ -166,6 +166,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._ble_client: BleakClient | None = None
         self._ble_connecting = False
         self._reconnect_handle: asyncio.TimerHandle | None = None
+        # Advertisement watchers; connecting the moment the opener is seen.
+        self._advert_unsubs: list[Callable[[], None]] = []
         # The one in-flight connect attempt, so a command can wait for it
         # instead of racing it.
         self._connect_task: asyncio.Task[bool] | None = None
@@ -456,11 +458,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return False
 
         self._ble_connecting = True
+        ble_device = None
         client: BleakClient | None = None
         connected = False
         try:
             ble_device = self._find_ble_device()
             if ble_device is None:
+                # Nothing to retry against until it advertises again, which
+                # _async_opener_seen picks up; the coordinator tick is the backstop.
                 return False
 
             _LOGGER.debug(
@@ -478,9 +483,6 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                     disconnected_callback=self._on_ble_disconnect,
                     max_attempts=2,
                 )
-                if not client.services:
-                    await client.get_services()
-
                 # Seen through ESPHome BLE proxies: 02367a11 is reported
                 # without a CCCD, so subscribing to it raises, even though
                 # phones see a CCCD on the same door. 02367a11 is optional.
@@ -541,11 +543,12 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return False
         finally:
             self._ble_connecting = False
-            if client is not None and not connected:
+            if ble_device is not None and not connected:
                 # Never leave a link open that nothing tracks: it would hold the
                 # adapter's or proxy's slot. Its disconnect callback is ignored
                 # (it was never published), so the retry is scheduled here.
-                await self._disconnect_quietly(client)
+                if client is not None:
+                    await self._disconnect_quietly(client)
                 self._schedule_reconnect()
 
     def _find_ble_device(self):
@@ -667,6 +670,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._set_ble_connected(False)
         if client is not None:
             await self._disconnect_quietly(client)
+            self._schedule_reconnect()
 
     @staticmethod
     async def _disconnect_quietly(client: BleakClient) -> None:
@@ -697,7 +701,57 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return
         if self._reconnect_handle is not None:
             self._reconnect_handle.cancel()
-        self._reconnect_handle = self.hass.loop.call_later(10, self._async_start_connect)
+        self._reconnect_handle = self.hass.loop.call_later(10, self._reconnect_fired)
+
+    @callback
+    def _reconnect_fired(self) -> None:
+        self._reconnect_handle = None
+        self._async_start_connect()
+
+    @callback
+    def _async_watch_adverts(self) -> None:
+        """Connect the moment the opener is seen advertising.
+
+        A connected opener doesn't advertise, and Home Assistant forgets a
+        device it hasn't heard from in a few minutes, so after a long
+        connection drops the opener is missing from the connectable list when
+        the retry runs. Polling would then wait up to a coordinator tick after
+        it reappears; the advertisement itself is the right trigger.
+        """
+        for prefix in BLE_NAME_PREFIXES:
+            self._advert_unsubs.append(
+                bluetooth.async_register_callback(
+                    self.hass,
+                    self._async_opener_seen,
+                    bluetooth.BluetoothCallbackMatcher(
+                        local_name=f"{prefix}*", connectable=True
+                    ),
+                    bluetooth.BluetoothScanningMode.ACTIVE,
+                )
+            )
+
+    @callback
+    def _async_opener_seen(
+        self,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
+        change: bluetooth.BluetoothChange,
+    ) -> None:
+        """An opener is advertising: connect if this door is otherwise idle.
+
+        This fires for every advertisement, so it only acts when nothing else
+        is going to: no link, no connect running and no retry pending. The
+        strict name resolution is shared with _find_ble_device.
+        """
+        if self._closing or self._ble_link_up():
+            return
+        if self._connect_task is not None and not self._connect_task.done():
+            return
+        if self._reconnect_handle is not None:
+            return
+        if self._match_ble_device([service_info]) is None:
+            return
+        _LOGGER.debug("BLE: %s is advertising; connecting", service_info.name)
+        self._async_start_connect()
 
     async def _send_ble_command(self, ble_cmd_id: int) -> bool:
         """Send a command over BLE if already connected.
@@ -818,7 +872,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def _async_wait_for_ble(self, timeout: float) -> bool:
         """Wait up to timeout for a connect to finish. True if BLE is usable."""
-        if self._ble_client is not None and self._ble_client.is_connected:
+        if self._ble_link_up():
             return True
         task = self._async_start_connect()
         if task is None:
@@ -831,7 +885,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         except (TimeoutError, asyncio.CancelledError):
             _LOGGER.debug("BLE: still connecting after %ss", timeout)
             return False
-        return self._ble_client is not None and self._ble_client.is_connected
+        return self._ble_link_up()
 
     async def _wait_for_ble_ack(self, timeout: float) -> bool:
         """Poll for a notification arriving after the command write."""
@@ -1443,6 +1497,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def async_start(self) -> None:
         """Start MQTT connection and kick off first update."""
+        if self._ble_enabled:
+            self._async_watch_adverts()
         if not self._cloud_enabled:
             _LOGGER.debug(
                 "Bluetooth-only mode: not connecting to MQTT and not polling the "
@@ -1476,6 +1532,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         """Cancel scheduled work and disconnect MQTT and BLE cleanly."""
         self._closing = True
         await super().async_shutdown()
+        for unsub in self._advert_unsubs:
+            unsub()
+        self._advert_unsubs.clear()
         if self._poll_unsub is not None:
             self._poll_unsub()
             self._poll_unsub = None
