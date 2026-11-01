@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.1
 
 ### Fixed
 - Bluetooth reconnects no longer trip over themselves on adapters that report a disconnect for every failed connection attempt (seen with BlueZ / USB adapters). A late report from an earlier attempt dropped the link being set up, which failed the connect and could leave the new connection open, holding the adapter's slot while the integration fell back to the cloud ([#25](https://github.com/b12e/flinx-garage-ha/issues/25)).
