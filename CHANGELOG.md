@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Bluetooth reconnects no longer trip over themselves on adapters that report a disconnect for every failed connection attempt (seen with BlueZ / USB adapters). A late report from an earlier attempt dropped the link being set up, which failed the connect and could leave the new connection open, holding the adapter's slot while the integration fell back to the cloud ([#25](https://github.com/b12e/flinx-garage-ha/issues/25)).
+- **Bluetooth connected** and **Connection** no longer show Bluetooth while there is no link. A link that dropped during the authentication handshake was still marked connected, and the periodic reconnect never ran while it was.
+- A Bluetooth connection that fails partway is now always closed, and Home Assistant shutting down mid-connect no longer leaves one open.
+
 ## 3.3.0
 
 ### Added
