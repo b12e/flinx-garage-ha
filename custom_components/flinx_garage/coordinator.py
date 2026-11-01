@@ -161,8 +161,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # scan runs on every reconnect/fallback tick).
         self._ble_not_connectable_warned = False
 
+        # Only ever an authenticated, live link: a connect in progress keeps its
+        # client to itself until the handshake is done.
         self._ble_client: BleakClient | None = None
         self._ble_connecting = False
+        self._reconnect_handle: asyncio.TimerHandle | None = None
+        # Advertisement watchers; connecting the moment the opener is seen.
+        self._advert_unsubs: list[Callable[[], None]] = []
         # The one in-flight connect attempt, so a command can wait for it
         # instead of racing it.
         self._connect_task: asyncio.Task[bool] | None = None
@@ -445,7 +450,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         if self._closing or not self._ble_enabled:
             return False
 
-        if self._ble_client and self._ble_client.is_connected:
+        if self._ble_link_up():
             return True
 
         if self._ble_connecting:
@@ -453,9 +458,14 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             return False
 
         self._ble_connecting = True
+        ble_device = None
+        client: BleakClient | None = None
+        connected = False
         try:
             ble_device = self._find_ble_device()
             if ble_device is None:
+                # Nothing to retry against until it advertises again, which
+                # _async_opener_seen picks up; the coordinator tick is the backstop.
                 return False
 
             _LOGGER.debug(
@@ -466,16 +476,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             # stall during service discovery/notify subscription, which would
             # otherwise leave us awaiting forever (and _ble_connecting stuck).
             async with asyncio.timeout(BLE_CONNECT_TIMEOUT):
-                self._ble_client = await establish_connection(
+                client = await establish_connection(
                     BleakClient,
                     ble_device,
                     ble_device.name or "flinx",
                     disconnected_callback=self._on_ble_disconnect,
                     max_attempts=2,
                 )
-                if not self._ble_client.services:
-                    await self._ble_client.get_services()
-
                 # Seen through ESPHome BLE proxies: 02367a11 is reported
                 # without a CCCD, so subscribing to it raises, even though
                 # phones see a CCCD on the same door. 02367a11 is optional.
@@ -484,7 +491,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 subscribed_primary = False
                 for char_uuid in (BLE_NOTIFY_CHAR, BLE_NOTIFY_CHAR2):
                     try:
-                        await self._ble_client.start_notify(char_uuid, self._ble_notification)
+                        await client.start_notify(char_uuid, self._ble_notification)
                     except BleakError as err:
                         _LOGGER.debug(
                             "BLE: %s not subscribable on this link (%s); continuing",
@@ -509,11 +516,17 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 # Bounded separately from the connect budget: a write that hangs
                 # on the proxy would otherwise eat the whole of it.
                 async with asyncio.timeout(BLE_WRITE_TIMEOUT):
-                    await self._ble_client.write_gatt_char(
+                    await client.write_gatt_char(
                         BLE_WRITE_CHAR, build_ble_auth(bytes.fromhex(self._dev_key))
                     )
                 await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
 
+            # The ack wait doesn't fail on its own, so a link that dropped during
+            # the handshake would otherwise be published as up.
+            if not client.is_connected:
+                raise BleakError("link dropped during authentication")
+            self._ble_client = client
+            connected = True
             self._set_ble_connected(True)
             _LOGGER.debug(
                 "BLE connected and authenticated to %s (auth resp: %s)",
@@ -524,14 +537,19 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
         except TimeoutError:
             _LOGGER.debug("BLE: connect timed out after %ss", BLE_CONNECT_TIMEOUT)
-            await self._teardown_ble_client()
             return False
         except (BleakError, Exception) as err:  # noqa: BLE001
             _LOGGER.debug("BLE connection failed: %s", err)
-            await self._teardown_ble_client()
             return False
         finally:
             self._ble_connecting = False
+            if ble_device is not None and not connected:
+                # Never leave a link open that nothing tracks: it would hold the
+                # adapter's or proxy's slot. Its disconnect callback is ignored
+                # (it was never published), so the retry is scheduled here.
+                if client is not None:
+                    await self._disconnect_quietly(client)
+                self._schedule_reconnect()
 
     def _find_ble_device(self):
         """Find *this door's* BLE peripheral among the discovered adverts."""
@@ -632,25 +650,108 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 self._door_alias, reason, f" [{detail}]" if detail else "",
             )
 
+    @callback
+    def _ble_link_up(self) -> bool:
+        """True while the published link is connected; clears it once it isn't.
+
+        The disconnect callback is the usual way a dropped link is noticed, but
+        it can go missing, and a stale client would keep the Bluetooth connected
+        sensor on and the coordinator tick from ever reconnecting.
+        """
+        if self._ble_client is not None and self._ble_client.is_connected:
+            return True
+        self._ble_client = None
+        self._set_ble_connected(False)
+        return False
+
     async def _teardown_ble_client(self) -> None:
         """Drop a half-open client so the proxy connection slot is freed."""
         client, self._ble_client = self._ble_client, None
         self._set_ble_connected(False)
         if client is not None:
-            try:
-                await client.disconnect()
-            except Exception:  # noqa: BLE001 — best-effort cleanup
-                pass
+            await self._disconnect_quietly(client)
+            self._schedule_reconnect()
+
+    @staticmethod
+    async def _disconnect_quietly(client: BleakClient) -> None:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
-        self._set_ble_connected(False)
+        if client is not self._ble_client:
+            # establish_connection retries internally, and on BlueZ each failed
+            # attempt reports a disconnect. Acting on those would drop the link
+            # that is being set up, or the one that replaced it.
+            _LOGGER.debug("BLE: ignoring disconnect of a superseded link")
+            return
         self._ble_client = None
+        self._set_ble_connected(False)
         if self._closing:
             _LOGGER.debug("BLE disconnected during shutdown")
             return
         _LOGGER.debug("BLE disconnected — will reconnect in 10s")
-        # Reconnect after a delay to avoid churn with the BLE proxy
-        self.hass.loop.call_later(10, self._async_start_connect)
+        self._schedule_reconnect()
+
+    @callback
+    def _schedule_reconnect(self) -> None:
+        """Reconnect in 10s, once: a delay avoids churn with the BLE proxy."""
+        if self._closing or not self._ble_enabled:
+            return
+        if self._reconnect_handle is not None:
+            self._reconnect_handle.cancel()
+        self._reconnect_handle = self.hass.loop.call_later(10, self._reconnect_fired)
+
+    @callback
+    def _reconnect_fired(self) -> None:
+        self._reconnect_handle = None
+        self._async_start_connect()
+
+    @callback
+    def _async_watch_adverts(self) -> None:
+        """Connect the moment the opener is seen advertising.
+
+        A connected opener doesn't advertise, and Home Assistant forgets a
+        device it hasn't heard from in a few minutes, so after a long
+        connection drops the opener is missing from the connectable list when
+        the retry runs. Polling would then wait up to a coordinator tick after
+        it reappears; the advertisement itself is the right trigger.
+        """
+        for prefix in BLE_NAME_PREFIXES:
+            self._advert_unsubs.append(
+                bluetooth.async_register_callback(
+                    self.hass,
+                    self._async_opener_seen,
+                    bluetooth.BluetoothCallbackMatcher(
+                        local_name=f"{prefix}*", connectable=True
+                    ),
+                    bluetooth.BluetoothScanningMode.ACTIVE,
+                )
+            )
+
+    @callback
+    def _async_opener_seen(
+        self,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
+        change: bluetooth.BluetoothChange,
+    ) -> None:
+        """An opener is advertising: connect if this door is otherwise idle.
+
+        This fires for every advertisement, so it only acts when nothing else
+        is going to: no link, no connect running and no retry pending. The
+        strict name resolution is shared with _find_ble_device.
+        """
+        if self._closing or self._ble_link_up():
+            return
+        if self._connect_task is not None and not self._connect_task.done():
+            return
+        if self._reconnect_handle is not None:
+            return
+        if self._match_ble_device([service_info]) is None:
+            return
+        _LOGGER.debug("BLE: %s is advertising; connecting", service_info.name)
+        self._async_start_connect()
 
     async def _send_ble_command(self, ble_cmd_id: int) -> bool:
         """Send a command over BLE if already connected.
@@ -771,7 +872,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def _async_wait_for_ble(self, timeout: float) -> bool:
         """Wait up to timeout for a connect to finish. True if BLE is usable."""
-        if self._ble_client is not None and self._ble_client.is_connected:
+        if self._ble_link_up():
             return True
         task = self._async_start_connect()
         if task is None:
@@ -784,7 +885,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         except (TimeoutError, asyncio.CancelledError):
             _LOGGER.debug("BLE: still connecting after %ss", timeout)
             return False
-        return self._ble_client is not None and self._ble_client.is_connected
+        return self._ble_link_up()
 
     async def _wait_for_ble_ack(self, timeout: float) -> bool:
         """Poll for a notification arriving after the command write."""
@@ -1332,7 +1433,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, Any]:
         """Periodic tick: mostly a fallback when MQTT is stale."""
         # Opportunistically (re)establish BLE — doesn't fail the update if it can't.
-        if not self.is_ble_connected:
+        if not self._ble_link_up():
             self._async_start_connect()
 
         if not self._cloud_enabled:
@@ -1396,6 +1497,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
     async def async_start(self) -> None:
         """Start MQTT connection and kick off first update."""
+        if self._ble_enabled:
+            self._async_watch_adverts()
         if not self._cloud_enabled:
             _LOGGER.debug(
                 "Bluetooth-only mode: not connecting to MQTT and not polling the "
@@ -1429,11 +1532,17 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         """Cancel scheduled work and disconnect MQTT and BLE cleanly."""
         self._closing = True
         await super().async_shutdown()
+        for unsub in self._advert_unsubs:
+            unsub()
+        self._advert_unsubs.clear()
         if self._poll_unsub is not None:
             self._poll_unsub()
             self._poll_unsub = None
         if self._post_command_refresh is not None:
             self._post_command_refresh.cancel()
+        if self._reconnect_handle is not None:
+            self._reconnect_handle.cancel()
+            self._reconnect_handle = None
         if self._connect_task is not None:
             self._connect_task.cancel()
             self._connect_task = None
