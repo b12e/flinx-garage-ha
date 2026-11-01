@@ -10,8 +10,7 @@ Home Assistant (HACS) integration for F-LinX-controlled garage doors.
 ## Features
 
 - **Real-time state** via MQTT - door position, LED status, operation count
-- **Local commands** via Bluetooth - works without internet
-- **Remote commands** via cloud API - fallback when Bluetooth is not available
+- **Configurable** connection mode - keep it local with Bluetooth only or only use the cloud, the choice is yours.
 - Garage door cover entity (open / close / stop / set position)
 - **Native partial open** - a button that drives the door to its partial open height, where the opener stops by itself
 - **Partial open height** - choose that height from Home Assistant (0-160 cm, the same presets as the F-LinX app)
@@ -21,24 +20,18 @@ Home Assistant (HACS) integration for F-LinX-controlled garage doors.
 
 By default, commands are sent via Bluetooth first, falling back to the cloud API automatically when BLE is unavailable. You can change this under **Configure → Connection mode** (see below).
 
-One integration entry covers one F-LinX account, with all of its doors. Add or remove doors later under **Configure → Manage devices**.
+One integration entry covers one F-LinX account and all of its connected garage doors. Add or remove garage doors later under **Configure → Manage devices**.
 
 ### Connection mode
 
 **Configure → Connection mode** decides which connections the integration may use. It applies to every door on the account.
 
-| Mode | Commands | State |
-| --- | --- | --- |
-| **Bluetooth only** | Bluetooth only; a command fails if the opener is out of range | Bluetooth command replies only |
-| **Bluetooth preferred, cloud fallback** (default) | Bluetooth, then the cloud | MQTT push, cloud poll and Bluetooth |
-| **Cloud preferred, Bluetooth fallback** | The cloud, then Bluetooth | MQTT push, cloud poll and Bluetooth |
-| **Cloud only** | The cloud only; Bluetooth is switched off entirely | MQTT push and cloud poll |
-
-> **Bluetooth only is fully local** - Home Assistant never contacts the F-LinX cloud, so there is no MQTT push and the periodic cloud poll is switched off and hidden. The door's position is then only updated by commands Home Assistant sends itself: if the door is opened another way - an RF remote, the wall button, the F-LinX app or the auto-close timer - Home Assistant will not see it, and the state stays stale until it next sends a command. The position is also unknown after a restart until the first command.
-
-**Cloud only** frees your Bluetooth adapter's or proxy's connection slot, at the cost of the local position stream, which makes set position less precise.
-
-When the Bluetooth link drops, the integration reconnects as soon as the opener is seen advertising again. If the internet or the F-LinX cloud goes down, the mixed modes keep the door available as long as the Bluetooth link is up, and commands keep working over it. Home Assistant also starts normally during an outage in that case, and MQTT reconnects by itself once the internet is back.
+| Mode | State updates |
+| --- | --- |
+| **Bluetooth only** | Bluetooth command replies only |
+| **Bluetooth preferred, cloud fallback** (default) | MQTT push, cloud poll and Bluetooth |
+| **Cloud preferred, Bluetooth fallback** | MQTT push, cloud poll and Bluetooth |
+| **Cloud only** | MQTT push and cloud poll |
 
 ### Checking which connection is used
 
@@ -50,10 +43,6 @@ Two diagnostic entities show what the integration is doing. They are disabled by
 | **Bluetooth connected** | On while an authenticated Bluetooth link to the opener is up. |
 
 In **Bluetooth preferred** mode, **Connection** reads **Cloud** exactly when the Bluetooth link is down. If it stays that way, check **Settings → System → Logs** for `BLE unavailable for <door>`, which says why (for example an opener that is out of range or a proxy that is passive-only).
-
-### Bluetooth with more than one door
-
-Your account reports which opener belongs to each door, so each door only ever talks to its own opener. With a single door configured, any `Noru_*` / `opener_*` opener in range is used. If a door has no opener reported and more than one door is configured, that door uses the cloud rather than risk sending a command to the wrong door.
 
 ### Native partial open
 
@@ -76,7 +65,7 @@ Two settings stored in the opener can be changed from Home Assistant, under the 
 | **Partial open height** | 0, 2, 4, 8, 12, 20, 40, 60, 80, 100, 120, 140, 160 cm | The heights the F-LinX app offers. Changing it does not move the door. With Home Assistant set to US customary units the options read in inches, with the app's cm alongside (e.g. `24 in (60 cm)`). |
 | **Light off delay** | 1-9 minutes | How long the light stays on after the door stops. |
 
-Both are stored in the opener itself, so they are shared with the F-LinX app and with a remote's partial button: whatever you set last, from anywhere, is what the door uses. How far a given height opens your door (as a percentage) depends on the door - on one door 60 cm is 31% and 80 cm is 42%.
+Both are stored on the garage motor, so they are shared with the F-LinX app and with a remote's partial button: whatever you set last, from anywhere, is what the door uses. How far a given height opens your door (as a percentage) depends on the door.
 
 Like commands, settings are written over the connections your connection mode allows - Bluetooth, the cloud, or one with the other as the fallback - and are only shown as changed once the opener confirms them.
 
@@ -85,6 +74,7 @@ Like commands, settings are written over the connections your connection mode al
 You can drive the door to a specific percentage with the cover position slider or the `cover.set_cover_position` action. This leaves the partial open height alone.
 
 > **Note:** This is **best-effort, software-based positioning.** The controller has no native "open to X%" command, so the integration sends a normal open/close and issues a stop once the live position reaches the target. It therefore lands *close* to the requested percentage (typically within a few percent) rather than exactly on it, and the door visibly moves and then stops. `0%` and `100%` use the dedicated close/open commands and reach the hard limits precisely.
+> This works best over Bluetooth as there is minimal delay in receiving current position updates.
 
 ### Dashboard shortcuts
 
@@ -106,15 +96,8 @@ features:
 ### Home Assistant Marketplace (formerly HACS)
 1. [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=b12e&repository=flinx-garage-ha&category=integration)
 2. Search for "F-LinX Garage Door" and click Download. Follow the on-screen instructions.
-3. Restart Home Assistant
 4. Go to Settings → Devices & services → + Add Integration → F-LinX Garage Door
 5. Follow the on-screen instructions
-
-
-### Manual
-
-1. Copy `custom_components/flinx_garage/` into your Home Assistant `config/custom_components/` directory
-2. Restart Home Assistant
 
 ### Configuration
 
@@ -126,4 +109,4 @@ features:
 
 - Home Assistant 2025.2.0+
 - Bluetooth adapter on your HA host (for local BLE commands) or an ESPHome based Bluetooth Proxy in range of your garage door
-- A garage door that works with the F-LinX app - either directly or via the USB dongle ([F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html)) connected to WiFi
+- A garage door that works with the F-LinX app - either directly or via the USB dongle ([F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html)) (connected to WiFi for cloud control)
