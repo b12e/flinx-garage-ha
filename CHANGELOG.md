@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Operation count** no longer steps back by one after an operation. Bluetooth reports the new count straight away, and a late MQTT report or cloud snapshot from just before the operation could then set it back, which Home Assistant logs as `state class total_increasing, but its state is not strictly increasing`. Reports are now ordered by the moment they describe, as the door position already was. A counter reset reported by the opener itself still comes through.
+
 ## 3.3.1
 
 ### Fixed

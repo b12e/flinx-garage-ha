@@ -199,6 +199,9 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self._position_ts: float = 0.0
         self.led_state: bool | None = None         # True=on, False=off
         self.operated_cycles: int | None = None
+        # Epoch second the applied operation count is known to hold at, for the
+        # same reason as _position_ts: a lagging report carries an older count.
+        self._cycles_ts: float = 0.0
         # Stored settings, as the door reports them.
         self.partial_level: int | None = None      # index into PARTIAL_LEVELS_CM
         self.led_off_delay: int | None = None      # minutes
@@ -296,9 +299,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 changed = True
 
         cycles = attrs.get(ATTR_OPERATED_CYCLES)
-        if cycles is not None and cycles != self.operated_cycles:
-            self.operated_cycles = cycles
-            changed = True
+        if cycles is not None:
+            changed |= self._apply_cycles(cycles, source, measured_at)
 
         changed |= self._apply_settings(attrs)
         self.is_online = True
@@ -387,6 +389,48 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             source, position, self._position_ts - measured_at, self.door_position,
         )
         return False
+
+    @callback
+    def _apply_cycles(
+        self, cycles: int, source: str, measured_at: float | None
+    ) -> bool:
+        """Take an operation count from a report. True if it changed.
+
+        A lagging MQTT report or REST snapshot carries the count from before an
+        operation BLE has already reported, and the sensor is total_increasing,
+        so Home Assistant flags the step back as a bug. Dated reports are ordered
+        by the moment they describe, like the position; a lower count from a
+        newer one is the opener's own word that its counter was reset. The REST
+        snapshot is undated, but the count only goes up, so a higher number from
+        it can't be stale and is taken as of now.
+        """
+        if measured_at is None:
+            if self.operated_cycles is not None and cycles <= self.operated_cycles:
+                if cycles < self.operated_cycles:
+                    _LOGGER.debug(
+                        "Ignoring undated %s operation count %s: below the %s we have",
+                        source, cycles, self.operated_cycles,
+                    )
+                return False
+            measured_at = time.time()
+        elif measured_at < self._cycles_ts:
+            if cycles != self.operated_cycles:
+                _LOGGER.debug(
+                    "Ignoring %s operation count %s: it describes %.0fs before the %s we have",
+                    source, cycles, self._cycles_ts - measured_at, self.operated_cycles,
+                )
+            return False
+
+        self._cycles_ts = max(self._cycles_ts, measured_at)
+        if cycles == self.operated_cycles:
+            return False
+        if self.operated_cycles is not None and cycles < self.operated_cycles:
+            _LOGGER.debug(
+                "%s reports operation count %s, down from %s: counter reset",
+                source, cycles, self.operated_cycles,
+            )
+        self.operated_cycles = cycles
+        return True
 
     @callback
     def position_is_local(self) -> bool:
@@ -1385,9 +1429,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
                 if value != self.door_position:
                     self.door_position = value
                     changed = True
-            elif code == ATTR_OPERATED_CYCLES and value != self.operated_cycles:
-                self.operated_cycles = value
-                changed = True
+            elif code == ATTR_OPERATED_CYCLES and isinstance(value, int):
+                changed |= self._apply_cycles(value, "cloud", None)
             elif code == ATTR_LED_ACTUAL:
                 new_led_state = value == 0xF0
                 if new_led_state != self.led_state:
