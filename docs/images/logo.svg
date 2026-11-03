@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="F-LinX Garage Door integration logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4FC3F7"/>
+      <stop offset="1" stop-color="#1565C0"/>
+    </linearGradient>
+    <linearGradient id="inside" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B2545"/>
+      <stop offset="1" stop-color="#13315C"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- house / garage body -->
+  <path d="M44 118 L128 56 L212 118 V198 a10 10 0 0 1 -10 10 H54 a10 10 0 0 1 -10 -10 Z"
+        fill="#ffffff" stroke="#ffffff" stroke-width="8" stroke-linejoin="round"/>
+  <!-- door opening -->
+  <rect x="76" y="128" width="104" height="80" rx="4" fill="url(#inside)"/>
+  <!-- light glow inside -->
+  <ellipse cx="128" cy="203" rx="44" ry="5" fill="#F0D000" opacity="0.35"/>
+  <!-- door panels, partially raised -->
+  <rect x="76" y="128" width="104" height="13" rx="3" fill="#E3F2FD"/>
+  <rect x="76" y="144" width="104" height="13" rx="3" fill="#BBDEFB"/>
+  <rect x="76" y="160" width="104" height="13" rx="3" fill="#90CAF9"/>
+  <!-- wireless arcs -->
+  <g fill="none" stroke="#F0D000" stroke-width="10" stroke-linecap="round">
+    <path d="M182 56 A22 22 0 0 1 204 78"/>
+    <path d="M182 34 A44 44 0 0 1 226 78"/>
+  </g>
+  <circle cx="182" cy="78" r="8" fill="#F0D000"/>
+</svg>
