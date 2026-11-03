@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-label="Mock-up of a Home Assistant dashboard using the F-LinX Garage Door integration">
+  <defs>
+    <clipPath id="frame"><rect width="1200" height="520" rx="18"/></clipPath>
+    <clipPath id="slider"><rect x="52" y="234" width="328" height="42" rx="12"/></clipPath>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .card { fill: #1C1C1E; }
+      .h { font-size: 18px; font-weight: 600; fill: #E6E6E6; }
+      .name { font-size: 15px; font-weight: 600; fill: #E6E6E6; }
+      .state { font-size: 13px; fill: #9E9E9E; }
+      .row { font-size: 14px; fill: #E6E6E6; }
+      .val { font-size: 14px; fill: #9E9E9E; }
+      .tick { font-size: 11px; fill: #7A7A7A; }
+      .btn { fill: #2B2B2F; }
+      .ico { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="520" fill="#111113"/>
+    <!-- top bar -->
+    <rect width="1200" height="56" fill="#1B1B1F"/>
+    <path transform="translate(16 16) scale(1)" d="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z" fill="#E6E6E6"/>
+    <text x="56" y="34" font-size="19" font-weight="500" fill="#E6E6E6" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">Home</text>
+    <text x="170" y="34" font-size="14" font-weight="500" fill="#9E9E9E" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">OVERVIEW</text>
+    <text x="276" y="34" font-size="14" font-weight="500" fill="#03A9F4" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">GARAGE</text>
+    <rect x="268" y="52" width="74" height="4" rx="2" fill="#03A9F4"/>
+    <!-- ============ column 1 ============ -->
+    <text x="36" y="96" class="h">Garage</text>
+    <!-- garage door tile with features -->
+    <rect x="36" y="112" width="360" height="232" rx="12" class="card"/>
+    <circle cx="72" cy="146" r="20" fill="#926BC7" fill-opacity="0.22"/>
+    <path transform="translate(60 134) scale(1)" d="M19,20H17V11H7V20H5V9L12,5L19,9V20M8,12H16V14H8V12Z" fill="#B79CE6"/>
+    <text x="104" y="142" class="name">Garage door</text>
+    <text x="104" y="162" class="state">Open · 42%</text>
+    <rect x="52" y="182" width="101" height="42" rx="12" class="btn"/>
+    <rect x="165" y="182" width="101" height="42" rx="12" class="btn"/>
+    <rect x="278" y="182" width="102" height="42" rx="12" class="btn"/>
+    <path transform="translate(90.5 191) scale(1)" d="M13,20H11V8L5.5,13.5L4.08,12.08L12,4.16L19.92,12.08L18.5,13.5L13,8V20Z" fill="#E6E6E6"/>
+    <path transform="translate(203.5 191) scale(1)" d="M18,18H6V6H18V18Z" fill="#E6E6E6"/>
+    <path transform="translate(317 191) scale(1)" d="M11,4H13V16L18.5,10.5L19.92,11.92L12,19.84L4.08,11.92L5.5,10.5L11,16V4Z" fill="#E6E6E6"/>
+    <rect x="52" y="234" width="328" height="42" rx="12" class="btn"/>
+    <g clip-path="url(#slider)">
+      <rect x="52" y="234" width="138" height="42" fill="#926BC7" fill-opacity="0.55"/>
+    </g>
+    <rect x="184" y="245" width="4" height="20" rx="2" fill="#ffffff"/>
+    <g class="state" text-anchor="middle" font-size="13">
+      <rect x="52" y="286" width="73" height="42" rx="12" class="btn"/><text x="88.5" y="312" fill="#E6E6E6">25%</text>
+      <rect x="137" y="286" width="73" height="42" rx="12" class="btn"/><text x="173.5" y="312" fill="#E6E6E6">50%</text>
+      <rect x="222" y="286" width="73" height="42" rx="12" class="btn"/><text x="258.5" y="312" fill="#E6E6E6">75%</text>
+      <rect x="307" y="286" width="73" height="42" rx="12" class="btn"/><text x="343.5" y="312" fill="#E6E6E6">100%</text>
+    </g>
+    <!-- partial open button tile -->
+    <rect x="36" y="360" width="360" height="72" rx="12" class="card"/>
+    <circle cx="72" cy="396" r="20" fill="#03A9F4" fill-opacity="0.2"/>
+    <path transform="translate(60 384) scale(1)" d="M22 9V20H20V11H4V20H2V9L12 5L22 9M19 12H5V14H19V12Z" fill="#4FC3F7"/>
+    <text x="104" y="392" class="name">Partial open</text>
+    <text x="104" y="412" class="state">2 minutes ago</text>
+    <rect x="304" y="380" width="76" height="32" rx="16" fill="#03A9F4" fill-opacity="0.18"/>
+    <text x="342" y="401" text-anchor="middle" font-size="13" font-weight="600" fill="#4FC3F7">Press</text>
+    <!-- ============ column 2 ============ -->
+    <text x="420" y="96" class="h">Activity</text>
+    <!-- history timeline -->
+    <rect x="420" y="112" width="360" height="184" rx="12" class="card"/>
+    <text x="436" y="168" class="state">Garage door</text>
+    <g>
+      <rect x="436" y="176" width="328" height="22" rx="4" fill="#4A4A50"/>
+      <rect x="567" y="176" width="26" height="22" fill="#926BC7"/>
+      <rect x="698" y="176" width="20" height="22" fill="#926BC7"/>
+      <rect x="748" y="176" width="16" height="22" fill="#926BC7"/>
+    </g>
+    <text x="436" y="222" class="state">Light</text>
+    <g>
+      <rect x="436" y="230" width="328" height="22" rx="4" fill="#4A4A50"/>
+      <rect x="565" y="230" width="34" height="22" fill="#FF9800"/>
+      <rect x="696" y="230" width="30" height="22" fill="#FF9800"/>
+      <rect x="746" y="230" width="18" height="22" fill="#FF9800"/>
+    </g>
+    <g class="tick" text-anchor="middle">
+      <text x="436" y="276" text-anchor="start">06:00</text><text x="518" y="276">09:00</text>
+      <text x="600" y="276">12:00</text><text x="682" y="276">15:00</text><text x="764" y="276" text-anchor="end">18:00</text>
+    </g>
+    <text x="436" y="144" class="name">Today</text>
+    <!-- operation count tile -->
+    <rect x="420" y="312" width="360" height="72" rx="12" class="card"/>
+    <circle cx="456" cy="348" r="20" fill="#26A69A" fill-opacity="0.22"/>
+    <path transform="translate(444 336) scale(1)" d="M4,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M4,6V18H11V6H4M20,18V6H18.76C19,6.54 18.95,7.07 18.95,7.13C18.88,7.8 18.41,8.5 18.24,8.75L15.91,11.3L19.23,11.28L19.24,12.5L14.04,12.47L14,11.47C14,11.47 17.05,8.24 17.2,7.95C17.34,7.67 17.91,6 16.5,6C15.27,6.05 15.41,7.3 15.41,7.3L13.87,7.31C13.87,7.31 13.88,6.65 14.25,6H13V18H15.58L15.57,17.14L16.54,17.13C16.54,17.13 17.45,16.97 17.46,16.08C17.5,15.08 16.65,15.08 16.5,15.08C16.37,15.08 15.43,15.13 15.43,15.95H13.91C13.91,15.95 13.95,13.89 16.5,13.89C19.1,13.89 18.96,15.91 18.96,15.91C18.96,15.91 19,17.16 17.85,17.63L18.37,18H20M8.92,16H7.42V10.2L5.62,10.76V9.53L8.76,8.41H8.92V16Z" fill="#4DB6AC"/>
+    <text x="488" y="344" class="name">Operation count</text>
+    <text x="488" y="364" class="state">1,284</text>
+    <!-- light tile -->
+    <rect x="420" y="400" width="360" height="72" rx="12" class="card"/>
+    <circle cx="456" cy="436" r="20" fill="#FF9800" fill-opacity="0.22"/>
+    <path transform="translate(444 424) scale(1)" d="M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z" fill="#FFB74D"/>
+    <text x="488" y="432" class="name">Light</text>
+    <text x="488" y="452" class="state">On</text>
+    <rect x="708" y="422" width="56" height="28" rx="14" fill="#FF9800" fill-opacity="0.85"/>
+    <circle cx="750" cy="436" r="10" fill="#ffffff"/>
+    <!-- ============ column 3 ============ -->
+    <text x="804" y="96" class="h">Device</text>
+    <rect x="804" y="112" width="360" height="296" rx="12" class="card"/>
+    <text x="820" y="146" class="name">Configuration</text>
+    <path transform="translate(825 173) scale(0.916667)" d="M13,9V15H16L12,19L8,15H11V9H8L12,5L16,9H13M4,2H20V4H4V2M4,20H20V22H4V20Z" fill="#9E9E9E"/>
+    <path transform="translate(825 225) scale(0.916667)" d="M12,20A7,7 0 0,1 5,13A7,7 0 0,1 12,6A7,7 0 0,1 19,13A7,7 0 0,1 12,20M19.03,7.39L20.45,5.97C20,5.46 19.55,5 19.04,4.56L17.62,6C16.07,4.74 14.12,4 12,4A9,9 0 0,0 3,13A9,9 0 0,0 12,22C17,22 21,17.97 21,13C21,10.88 20.26,8.93 19.03,7.39M11,14H13V8H11M15,1H9V3H15V1Z" fill="#9E9E9E"/>
+    <text x="860" y="189" class="row">Partial open height</text>
+    <rect x="1028" y="164" width="120" height="40" rx="8" fill="#242428" stroke="#4A4A50"/>
+    <text x="1042" y="189" class="row">60 cm</text>
+    <path transform="translate(1120 172) scale(1)" d="M7,10L12,15L17,10H7Z" fill="#9E9E9E"/>
+    <text x="860" y="241" class="row">Light off delay</text>
+    <rect x="1028" y="216" width="120" height="40" rx="8" fill="#242428" stroke="#4A4A50"/>
+    <text x="1042" y="241" class="row">3</text>
+    <text x="1134" y="241" class="val" text-anchor="end">min</text>
+    <line x1="820" y1="272" x2="1148" y2="272" stroke="#2E2E33"/>
+    <text x="820" y="302" class="name">Diagnostic</text>
+    <path transform="translate(825 325) scale(0.916667)" d="M19,10L17,12L19,14L21,12M14.88,16.29L13,18.17V14.41M13,5.83L14.88,7.71L13,9.58M17.71,7.71L12,2H11V9.58L6.41,5L5,6.41L10.59,12L5,17.58L6.41,19L11,14.41V22H12L17.71,16.29L13.41,12M7,12L5,10L3,12L5,14L7,12Z" fill="#9E9E9E"/>
+    <path transform="translate(825 369) scale(0.916667)" d="M15,20A1,1 0 0,0 14,19H13V17H17A2,2 0 0,0 19,15V5A2,2 0 0,0 17,3H7A2,2 0 0,0 5,5V15A2,2 0 0,0 7,17H11V19H10A1,1 0 0,0 9,20H2V22H9A1,1 0 0,0 10,23H14A1,1 0 0,0 15,22H22V20H15M7,15V5H17V15H7M8,10.37L9.24,9.13L10.93,10.83L14.76,7L16,8.5L10.93,13.57L8,10.37Z" fill="#9E9E9E"/>
+    <text x="860" y="341" class="row">Connection</text>
+    <text x="1148" y="341" class="val" text-anchor="end" fill="#4FC3F7" style="fill:#4FC3F7">Bluetooth</text>
+    <text x="860" y="385" class="row">Bluetooth connected</text>
+    <text x="1148" y="385" class="val" text-anchor="end">Connected</text>
+  </g>
+</svg>

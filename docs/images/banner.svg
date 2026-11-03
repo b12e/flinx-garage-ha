@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="F-LinX Garage Door for Home Assistant">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1E33"/>
+      <stop offset="1" stop-color="#14365A"/>
+    </linearGradient>
+    <linearGradient id="logo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4FC3F7"/>
+      <stop offset="1" stop-color="#1565C0"/>
+    </linearGradient>
+    <linearGradient id="inside" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#06121F"/>
+      <stop offset="1" stop-color="#0E2740"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="1" r="0.8">
+      <stop offset="0" stop-color="#F0D000" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#F0D000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="slat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E3F2FD"/>
+      <stop offset="1" stop-color="#A9CCEB"/>
+    </linearGradient>
+    <clipPath id="card"><rect width="1280" height="360" rx="24"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#card)">
+    <rect width="1280" height="360" fill="url(#sky)"/>
+    <!-- faint panel lines in the background -->
+    <g stroke="#ffffff" stroke-opacity="0.035" stroke-width="2">
+      <line x1="0" y1="60" x2="1280" y2="60"/><line x1="0" y1="120" x2="1280" y2="120"/>
+      <line x1="0" y1="180" x2="1280" y2="180"/><line x1="0" y1="240" x2="1280" y2="240"/>
+      <line x1="0" y1="300" x2="1280" y2="300"/>
+    </g>
+
+    <!-- logo -->
+    <g transform="translate(64 72) scale(0.84375)">
+      <rect width="256" height="256" rx="56" fill="url(#logo)"/>
+      <path d="M44 118 L128 56 L212 118 V198 a10 10 0 0 1 -10 10 H54 a10 10 0 0 1 -10 -10 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/>
+      <rect x="76" y="128" width="104" height="80" rx="4" fill="#0B2545"/>
+      <ellipse cx="128" cy="203" rx="44" ry="5" fill="#F0D000" opacity="0.35"/>
+      <rect x="76" y="128" width="104" height="13" rx="3" fill="#E3F2FD"/>
+      <rect x="76" y="144" width="104" height="13" rx="3" fill="#BBDEFB"/>
+      <rect x="76" y="160" width="104" height="13" rx="3" fill="#90CAF9"/>
+      <g fill="none" stroke="#F0D000" stroke-width="10" stroke-linecap="round">
+        <path d="M182 56 A22 22 0 0 1 204 78"/><path d="M182 34 A44 44 0 0 1 226 78"/>
+      </g>
+      <circle cx="182" cy="78" r="8" fill="#F0D000"/>
+    </g>
+
+    <!-- text -->
+    <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+      <text x="316" y="138" font-size="54" font-weight="700" fill="#ffffff">F-LinX Garage Door</text>
+      <text x="318" y="182" font-size="28" font-weight="500" fill="#7FD1FF">for Home Assistant</text>
+      <text x="318" y="226" font-size="20" fill="#B8C7D9">Local Bluetooth control, cloud fallback and real-time state.</text>
+
+      <g font-size="16" font-weight="600" text-anchor="middle">
+        <rect x="318" y="254" width="164" height="36" rx="18" fill="#41BDF5" fill-opacity="0.16" stroke="#41BDF5" stroke-opacity="0.5"/>
+        <text x="400" y="278" fill="#9BDCFF">Bluetooth first</text>
+        <rect x="494" y="254" width="156" height="36" rx="18" fill="#41BDF5" fill-opacity="0.16" stroke="#41BDF5" stroke-opacity="0.5"/>
+        <text x="572" y="278" fill="#9BDCFF">Cloud fallback</text>
+        <rect x="662" y="254" width="132" height="36" rx="18" fill="#41BDF5" fill-opacity="0.16" stroke="#41BDF5" stroke-opacity="0.5"/>
+        <text x="728" y="278" fill="#9BDCFF">MQTT push</text>
+      </g>
+    </g>
+
+    <!-- garage illustration, right -->
+    <g transform="translate(1000 52)">
+      <!-- wall + roof -->
+      <path d="M0 96 L120 20 L240 96 V308 H0 Z" fill="#1C4670"/>
+      <path d="M-12 102 L120 16 L252 102" fill="none" stroke="#2E6699" stroke-width="12" stroke-linejoin="round" stroke-linecap="round"/>
+      <!-- door frame + inside -->
+      <rect x="34" y="128" width="172" height="180" fill="url(#inside)"/>
+      <rect x="34" y="200" width="172" height="108" fill="url(#glow)"/>
+      <!-- car silhouette -->
+      <path d="M58 300 v-26 q0-10 10-12 l20-4 l14-22 q4-6 12-6 h52 q8 0 12 6 l14 22 l14 4 q10 2 10 12 v26 Z" fill="#0A1826"/>
+      <circle cx="84" cy="300" r="12" fill="#06121F"/><circle cx="156" cy="300" r="12" fill="#06121F"/>
+      <!-- door panels, about 42% open -->
+      <g fill="url(#slat)">
+        <rect x="34" y="128" width="172" height="23" rx="3"/>
+        <rect x="34" y="154" width="172" height="23" rx="3"/>
+        <rect x="34" y="180" width="172" height="23" rx="3"/>
+        <rect x="34" y="206" width="172" height="23" rx="3"/>
+      </g>
+      <!-- signal from the opener -->
+      <circle cx="120" cy="114" r="5" fill="#F0D000"/>
+      <g fill="none" stroke="#F0D000" stroke-linecap="round" stroke-width="5">
+        <path d="M104 100 A22 22 0 0 1 136 100" opacity="0.9"/>
+        <path d="M92 88 A38 38 0 0 1 148 88" opacity="0.6"/>
+      </g>
+    </g>
+  </g>
+</svg>
