@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **Opening / closing** now comes from the door itself. The opener reports which way the motor is running (attribute 10005: opening, stopped, closing), and the cover shows that instead of guessing from position changes. The state appears the moment the door starts moving, including from a remote or the wall button, and a stop shows at once instead of after the position settles. Doors or reports without it fall back to the old position-based guess.
+
 ### Fixed
 - **Operation count** no longer steps back by one after an operation. Bluetooth reports the new count straight away, and a late MQTT report or cloud snapshot from just before the operation could then set it back, which Home Assistant logs as `state class total_increasing, but its state is not strictly increasing`. Reports are now ordered by the moment they describe, as the door position already was. A counter reset reported by the opener itself still comes through.
 
