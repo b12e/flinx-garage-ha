@@ -71,9 +71,19 @@
       <!-- door frame + inside -->
       <rect x="34" y="128" width="172" height="180" fill="url(#inside)"/>
       <rect x="34" y="200" width="172" height="108" fill="url(#glow)"/>
-      <!-- car silhouette -->
-      <path d="M58 300 v-26 q0-10 10-12 l20-4 l14-22 q4-6 12-6 h52 q8 0 12 6 l14 22 l14 4 q10 2 10 12 v26 Z" fill="#0A1826"/>
-      <circle cx="84" cy="300" r="12" fill="#06121F"/><circle cx="156" cy="300" r="12" fill="#06121F"/>
+      <!-- car, seen from the front, parked inside; its roof is hidden behind the half-open door -->
+      <ellipse cx="120" cy="300" rx="66" ry="5" fill="#000" opacity="0.35"/>
+      <rect x="66" y="282" width="20" height="18" rx="4" fill="#06121F"/>
+      <rect x="154" y="282" width="20" height="18" rx="4" fill="#06121F"/>
+      <path d="M86 216 Q88 210 95 210 H145 Q152 210 154 216 L170 254 H70 Z" fill="#0A1826"/>
+      <path d="M92 220 Q93 216 98 216 H142 Q147 216 148 220 L160 250 H80 Z" fill="#1B3A57"/>
+      <rect x="58" y="246" width="10" height="7" rx="3" fill="#0A1826"/>
+      <rect x="172" y="246" width="10" height="7" rx="3" fill="#0A1826"/>
+      <rect x="62" y="252" width="116" height="36" rx="10" fill="#0A1826"/>
+      <rect x="70" y="261" width="22" height="10" rx="5" fill="#F0D000" opacity="0.9"/>
+      <rect x="148" y="261" width="22" height="10" rx="5" fill="#F0D000" opacity="0.9"/>
+      <rect x="100" y="263" width="40" height="8" rx="3" fill="#06121F"/>
+      <rect x="76" y="279" width="88" height="3" rx="1.5" fill="#06121F"/>
       <!-- door panels, about 42% open -->
       <g fill="url(#slat)">
         <rect x="34" y="128" width="172" height="23" rx="3"/>
