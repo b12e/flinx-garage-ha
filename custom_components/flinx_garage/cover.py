@@ -41,6 +41,10 @@ DIRECTION_HYSTERESIS = 4  # %
 # adopting that as +42% of travel showed a phantom "opening" the door never did.
 DIRECTION_MAX_GAP = 5.0  # seconds
 
+# After a command the door can still report "stopped" for a moment before the
+# motor starts. That report must not cancel the direction just asked for.
+COMMAND_GRACE_SEC = 3.0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -95,6 +99,8 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         # When the previous position reading arrived, to tell movement from a
         # resync after a gap.
         self._last_report_ts: float = 0.0
+        # When a command last set the direction, for COMMAND_GRACE_SEC.
+        self._commanded_at: float | None = None
 
     @callback
     def _cancel_direction_reset(self) -> None:
@@ -106,6 +112,11 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
     def _clear_stale_direction(self) -> None:
         self._direction_reset = None
         if self._direction == 0:
+            return
+        if self.coordinator.reported_motion():
+            # The door itself still says it is moving (a pause in position
+            # changes, e.g. at the start of travel); keep the direction.
+            self._schedule_direction_reset()
             return
 
         _LOGGER.debug(
@@ -127,8 +138,22 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
     def _handle_coordinator_update(self) -> None:
         pos = self.coordinator.door_position
         now = time.monotonic()
+        motion = self.coordinator.reported_motion()
 
-        if pos is not None:
+        if motion is not None:
+            # The door reports its own direction: take it as is, and keep the
+            # inference below in step for when the reports stop.
+            commanded = (
+                self._commanded_at is not None
+                and now - self._commanded_at < COMMAND_GRACE_SEC
+            )
+            if motion or not (commanded and self._direction):
+                self._direction = motion
+            if motion:
+                self._last_position_ts = now
+            self._extreme = pos
+            self._last_report_ts = now
+        elif pos is not None:
             if self._extreme is None or now - self._last_report_ts > DIRECTION_MAX_GAP:
                 # First reading, or the first after a gap: adopt the position
                 # without reading travel into it. Any direction a command set
@@ -149,7 +174,8 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         self._last_position = pos
 
         # Clear direction if position hasn't changed for a while or we hit a limit.
-        if self._direction != 0:
+        # Not while the door reports its own direction: it says when it stops.
+        if self._direction != 0 and motion is None:
             if now - self._last_position_ts > MOVING_WINDOW_SEC:
                 self._direction = 0
             elif self._direction == 1 and pos == 100:
@@ -208,6 +234,7 @@ class FlinxGarageCover(CoordinatorEntity[FlinxGarageCoordinator], CoverEntity):
         self._direction = direction
         self._extreme = self.coordinator.door_position
         self._last_position_ts = time.monotonic()
+        self._commanded_at = self._last_position_ts
         if direction:
             self._schedule_direction_reset()
         else:

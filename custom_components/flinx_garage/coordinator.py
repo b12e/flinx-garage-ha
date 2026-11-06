@@ -36,6 +36,7 @@ from .const import (
     ATTR_DOOR_POSITION,
     ATTR_LED_ACTUAL,
     ATTR_LED_OFF_DELAY,
+    ATTR_MOTION_STATE,
     ATTR_OPERATED_CYCLES,
     ATTR_PARTIAL_LEVEL,
     BLE_ACK_TIMEOUT,
@@ -66,6 +67,8 @@ from .const import (
     MODE_BLE_ONLY,
     MODE_CLOUD_ONLY,
     MODE_CLOUD_PREFERRED,
+    MOTION_DIRECTIONS,
+    MOTION_MAX_AGE,
     MQTT_STALE_THRESHOLD,
     PARTIAL_LEVELS_CM,
     POSITION_LEAD_TIME,
@@ -193,6 +196,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         self.door_position: int | None = None      # 0–100
         self.position_source: str | None = None    # "MQTT", "BLE" or "cloud"
         self.position_updated_at: float = 0.0      # loop clock, when it arrived
+        # Direction the door reports (attr 10005): +1 opening, 0 stopped, -1
+        # closing, None until a report carries it. See reported_motion().
+        self.door_motion: int | None = None
+        self.motion_updated_at: float = 0.0        # loop clock, last report with it
         # Epoch second the applied position describes — not when it arrived. MQTT
         # has been seen delivering reports 26s after the moment they describe, so
         # ordering by arrival lets an old position overwrite a newer one.
@@ -279,7 +286,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
         pos = attrs.get(ATTR_DOOR_POSITION)
         measured_at = self._report_ts(attrs, source)
-        if pos is not None and self._accept_position(pos, source, measured_at):
+        pos_accepted = pos is not None and self._accept_position(pos, source, measured_at)
+        if pos_accepted:
             # Record freshness even when the value is unchanged: the positioning
             # loop needs to know how current its reading is, not just that it
             # differs from last time.
@@ -288,6 +296,17 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self._position_ts = measured_at or time.time()
             if pos != self.door_position:
                 self.door_position = pos
+                changed = True
+
+        motion_raw = attrs.get(ATTR_MOTION_STATE)
+        # A report too old for its position is too old for its direction.
+        if motion_raw is not None and (pos is None or pos_accepted):
+            # An unmapped value (0x03) clears it, so the cover goes back to
+            # inferring direction rather than trusting the previous value.
+            motion = MOTION_DIRECTIONS.get(motion_raw)
+            self.motion_updated_at = self.hass.loop.time()
+            if motion != self.door_motion:
+                self.door_motion = motion
                 changed = True
 
         led_raw = attrs.get(ATTR_LED_ACTUAL)
@@ -444,6 +463,19 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             self.position_source == "BLE"
             and self.hass.loop.time() - self.position_updated_at < POSITION_LOCAL_MAX_AGE
         )
+
+    def reported_motion(self) -> int | None:
+        """The door's own direction (+1/0/-1), or None if not recently reported.
+
+        Reports stream several times a second while the door moves and every
+        ~5 s at rest, so one older than MOTION_MAX_AGE means the link has gone
+        quiet and the last value says nothing about the door now.
+        """
+        if self.door_motion is None:
+            return None
+        if self.hass.loop.time() - self.motion_updated_at > MOTION_MAX_AGE:
+            return None
+        return self.door_motion
 
     def _build_state(self) -> dict[str, Any]:
         return {

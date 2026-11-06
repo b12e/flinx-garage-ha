@@ -58,12 +58,21 @@ BLE_CONNECT_TIMEOUT = 30  # seconds
 ATTR_DEVICE_NAME = 9984         # 0x2700, NUL-terminated Bluetooth name
 ATTR_PARTIAL_LEVEL = 10001      # Partial open height, index into PARTIAL_LEVELS_CM
 ATTR_LED_OFF_DELAY = 10003      # Light auto-off delay: written in minutes, reported x 10
-ATTR_MOTION_STATE = 10005       # 0x03 starting, 0x00 moving, 0x01 at rest
+ATTR_MOTION_STATE = 10005       # 0x00 opening, 0x01 stopped, 0x02 closing (see MOTION_DIRECTIONS)
 ATTR_OPERATED_CYCLES = 10006    # 2-byte cumulative counter
 ATTR_MOTOR_BASELINE = 10010     # 2-byte motor force baseline
 ATTR_DOOR_POSITION = 10012      # 0-100% door position — PRIMARY state
 ATTR_LED_ACTUAL = 10013         # Actual LED state: 0xf0=on, 0xf1=off
 ATTR_DEVICE_ID = 10014          # 8-byte device ID (informational)
+
+# The motor's own direction, passed through by the controller: the same byte its
+# serial status frame carries. Captured over MQTT 2026-11-06 through an open, a
+# close, a stop mid-close and a resumed close; it changes before the position
+# does. 0x03 was seen once at the start of a partial open and is left unmapped.
+MOTION_DIRECTIONS = {0x00: 1, 0x01: 0, 0x02: -1}  # +1 opening, 0 stopped, -1 closing
+# Reports come ~3x a second while moving and every ~5 s at rest; older than this
+# and the link has gone quiet, so the cover falls back to inferring direction.
+MOTION_MAX_AGE = 6.0  # seconds
 
 # Known 2-byte attrs (vs default 1-byte)
 ATTR_SIZE_2B = {ATTR_OPERATED_CYCLES, ATTR_MOTOR_BASELINE}
