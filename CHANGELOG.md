@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.2
 
 ### Changed
 - **Opening / closing** now comes from the door itself. The opener reports which way the motor is running (attribute 10005: opening, stopped, closing), and the cover shows that instead of guessing from position changes. The state appears the moment the door starts moving, including from a remote or the wall button, and a stop shows at once instead of after the position settles. Doors or reports without it fall back to the old position-based guess.
