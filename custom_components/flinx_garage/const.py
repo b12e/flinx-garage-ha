@@ -73,6 +73,13 @@ MOTION_DIRECTIONS = {0x00: 1, 0x01: 0, 0x02: -1}  # +1 opening, 0 stopped, -1 cl
 # Reports come ~3x a second while moving and every ~5 s at rest; older than this
 # and the link has gone quiet, so the cover falls back to inferring direction.
 MOTION_MAX_AGE = 6.0  # seconds
+# How long an acked open/close gets to show movement before it counts as ignored
+# (issue #31: an acked open that never started). Over the BLE link the door's
+# direction report follows the ack within ~50 ms; MQTT can take a few seconds.
+MOVE_CONFIRM_TIMEOUT = 5.0  # seconds, watching over MQTT
+MOVE_CONFIRM_TIMEOUT_LOCAL = 2.0  # seconds, watching over the BLE link
+# Sends per transport before an ignored open/close moves on to the next one.
+MOVE_CONFIRM_ATTEMPTS = 2
 
 # Known 2-byte attrs (vs default 1-byte)
 ATTR_SIZE_2B = {ATTR_OPERATED_CYCLES, ATTR_MOTOR_BASELINE}
