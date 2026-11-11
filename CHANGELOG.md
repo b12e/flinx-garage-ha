@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- A press that never reached the door no longer passes as sent over Bluetooth. Any Bluetooth notification counted as the door's acknowledgement, and the opener sends a status report every few seconds, so one arriving just after the command made it look confirmed and the cloud fallback never ran. Only the door's own acknowledgement of that command counts now ([#31](https://github.com/b12e/flinx-garage-ha/issues/31)).
+- An open or close the door acknowledges but doesn't act on is no longer silent. If the door hasn't started moving within 2 seconds (5 when only MQTT shows the door), the command is sent once more over the same connection, then over the other one if the connection mode allows it. If the door still doesn't move, the action fails with an error saying the opener accepted the command but the door did not move, and each miss is logged as a warning ([#31](https://github.com/b12e/flinx-garage-ha/issues/31)).
+
 ## 3.3.2
 
 ### Changed

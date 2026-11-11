@@ -69,6 +69,9 @@ from .const import (
     MODE_CLOUD_PREFERRED,
     MOTION_DIRECTIONS,
     MOTION_MAX_AGE,
+    MOVE_CONFIRM_ATTEMPTS,
+    MOVE_CONFIRM_TIMEOUT,
+    MOVE_CONFIRM_TIMEOUT_LOCAL,
     MQTT_STALE_THRESHOLD,
     PARTIAL_LEVELS_CM,
     POSITION_LEAD_TIME,
@@ -93,6 +96,7 @@ from .crypto import (
     BLE_CMD_PARTIAL,
     BLE_CMD_STOP,
     BLE_MSG_ATTR_WRITE,
+    BLE_MSG_CONTROL,
     BleAck,
     build_ble_attr_write,
     build_ble_auth,
@@ -106,6 +110,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # One attempt over one transport: True once the door has confirmed it.
 _Send = Callable[[], Awaitable[bool]]
+
+# How a transport reads in an error message.
+_TRANSPORT_NAMES = {TRANSPORT_BLE: "Bluetooth", TRANSPORT_CLOUD: "the cloud"}
 
 
 def _is_flinx_name(name: str | None) -> bool:
@@ -182,6 +189,8 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         # raises — "Too frequent operation" and "Device is offline" are things
         # the user can act on, so they must not be swallowed into a False.
         self._last_command_error: str | None = None
+        # Transports that delivered the current command without the door moving.
+        self._unmoved: list[str] = []
         self._last_notification: bytes | None = None
         # The door's short reply to the last frame written, kept apart from the
         # attribute reports that follow it.
@@ -832,51 +841,72 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     async def _send_ble_command(self, ble_cmd_id: int) -> bool:
         """Send a command over BLE if already connected.
 
-        Returns True only if the door acknowledges with a notification — a
-        successful GATT write alone does not mean the device accepted the frame
-        (the auth/command format is reverse-engineered). Without an ack we
-        return False so the caller falls back to the cloud command.
+        Returns True only if the door acks this command: ``04 06 <2*cmd> 00 05
+        <status>``. Any notification used to count, but the opener streams an
+        attribute report every few seconds and forwards its own log over the
+        same characteristic, so one of those landing in the ack window made an
+        unanswered command look confirmed and skipped the fallback (issue #31).
         """
         if not await self._write_ble_frame(
             lambda key: build_ble_command(ble_cmd_id, key)
         ):
             return False
 
-        # Wait (outside the write lock) for an acknowledgement notification.
-        acked = await self._wait_for_ble_ack(BLE_ACK_TIMEOUT)
-        if acked:
-            _LOGGER.debug("BLE command acked: %s", self._last_notification.hex())
-            return True
-        _LOGGER.debug("BLE command sent but no ack within %ss", BLE_ACK_TIMEOUT)
-        return False
+        ack = await self._wait_for_ble_reply(BLE_MSG_CONTROL, (ble_cmd_id * 2) & 0xFF)
+        if ack is None:
+            _LOGGER.debug(
+                "BLE command 0x%02x sent but not acked within %ss",
+                ble_cmd_id, BLE_ACK_TIMEOUT,
+            )
+            return False
+        if not ack.ok:
+            _LOGGER.debug("BLE command 0x%02x refused: %s", ble_cmd_id, ack)
+            self._last_command_error = "the opener refused the command over Bluetooth"
+            return False
+        _LOGGER.debug("BLE command 0x%02x acked", ble_cmd_id)
+        return True
 
     async def _send_ble_attr(self, attr: int, value: int) -> bool:
         """Write one stored setting over BLE, confirmed by the door's own ack.
 
-        Unlike a command, the reply is checked rather than any notification
-        taken as success: the ack echoes the message type and carries a status,
-        and a write the opener refused must not read as a setting changed.
+        The ack echoes the message type and carries a status, and a write the
+        opener refused must not read as a setting changed.
         """
         if not await self._write_ble_frame(
             lambda key: build_ble_attr_write(attr, value, key)
         ):
             return False
 
+        ack = await self._wait_for_ble_reply(BLE_MSG_ATTR_WRITE)
+        if ack is None:
+            _LOGGER.debug("BLE attr write sent but no ack within %ss", BLE_ACK_TIMEOUT)
+            return False
+        if not ack.ok:
+            _LOGGER.debug("BLE attr 0x%04x=%s refused: %s", attr, value, ack)
+            self._last_command_error = "the opener refused the setting over Bluetooth"
+            return False
+        _LOGGER.debug("BLE attr 0x%04x=%s acked", attr, value)
+        return True
+
+    async def _wait_for_ble_reply(
+        self, msg_type: int, sep: int | None = None
+    ) -> BleAck | None:
+        """The door's ack to the frame just written, or None if none came.
+
+        Only an ack of the given message type (and, for a command, the echoed
+        separator byte) counts; reports and log lines are not replies.
+        """
         deadline = self.hass.loop.time() + BLE_ACK_TIMEOUT
         while self.hass.loop.time() < deadline:
             ack = self._last_ble_ack
-            if ack is not None and ack.msg_type == BLE_MSG_ATTR_WRITE:
-                if ack.ok:
-                    _LOGGER.debug("BLE attr 0x%04x=%s acked", attr, value)
-                    return True
-                _LOGGER.debug("BLE attr 0x%04x=%s refused: %s", attr, value, ack)
-                self._last_command_error = (
-                    "the opener refused the setting over Bluetooth"
-                )
-                return False
+            if (
+                ack is not None
+                and ack.msg_type == msg_type
+                and (sep is None or ack.sep == sep)
+            ):
+                return ack
             await asyncio.sleep(0.05)
-        _LOGGER.debug("BLE attr write sent but no ack within %ss", BLE_ACK_TIMEOUT)
-        return False
+        return None
 
     async def _write_ble_frame(self, build: Callable[[bytes], bytes]) -> bool:
         """Write one frame on the live link. False if there was nothing to write on.
@@ -975,13 +1005,13 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
     async def async_door_open(self) -> bool:
         self._cancel_position_task()
         return await self._send_command(
-            BLE_CMD_OPEN, CLOUD_CMD_OPEN, target_position=DOOR_STATE_OPEN
+            BLE_CMD_OPEN, CLOUD_CMD_OPEN, target_position=DOOR_STATE_OPEN, expect_motion=1
         )
 
     async def async_door_close(self) -> bool:
         self._cancel_position_task()
         return await self._send_command(
-            BLE_CMD_CLOSE, CLOUD_CMD_CLOSE, target_position=DOOR_STATE_CLOSED
+            BLE_CMD_CLOSE, CLOUD_CMD_CLOSE, target_position=DOOR_STATE_CLOSED, expect_motion=-1
         )
 
     async def async_door_stop(self) -> bool:
@@ -1069,6 +1099,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
             BLE_CMD_OPEN if opening else BLE_CMD_CLOSE,
             CLOUD_CMD_OPEN if opening else CLOUD_CMD_CLOSE,
             target_position=None,
+            expect_motion=1 if opening else -1,
         )
         if not ok:
             _LOGGER.warning("Set position: failed to start movement toward %s%%", target)
@@ -1179,15 +1210,107 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         ble_cmd_id: int,
         cloud_control_ident: int,
         target_position: int | None = None,
+        expect_motion: int | None = None,
     ) -> bool:
-        """Send a command over the transports the connection mode allows."""
-        ok = await self._send_via(
-            lambda: self._send_ble_command(ble_cmd_id),
-            lambda: self._send_cloud_command(cloud_control_ident),
-        )
+        """Send a command over the transports the connection mode allows.
+
+        With ``expect_motion`` (+1 open, -1 close) a transport only counts once
+        the door starts moving that way. An ack the door then ignores is sent
+        again over the same transport, then moves on to the next transport the
+        mode allows instead of passing silently.
+        """
+        ble: _Send = lambda: self._send_ble_command(ble_cmd_id)  # noqa: E731
+        cloud: _Send = lambda: self._send_cloud_command(cloud_control_ident)  # noqa: E731
+        if expect_motion is not None:
+            ble = self._confirming_motion(ble, TRANSPORT_BLE, expect_motion)
+            cloud = self._confirming_motion(cloud, TRANSPORT_CLOUD, expect_motion)
+        ok = await self._send_via(ble, cloud)
         if ok:
             self._schedule_post_command_refresh(target_position)
         return ok
+
+    def _confirming_motion(self, send: _Send, transport: str, direction: int) -> _Send:
+        """Wrap one transport's attempt so it also has to get the door moving.
+
+        A door that acks and ignores the command is sent it once more over the
+        same transport before the caller moves on to the next one.
+        """
+        action = "open" if direction > 0 else "close"
+
+        async def attempt() -> bool:
+            delivered = False
+            for sent in range(1, MOVE_CONFIRM_ATTEMPTS + 1):
+                start = self.door_position
+                sent_at = self.hass.loop.time()
+                if not await send():
+                    break
+                delivered = True
+                if not self._expects_motion(start, direction):
+                    return True
+                window = await self._wait_for_motion(start, sent_at, direction)
+                if window is None:
+                    if sent > 1:
+                        _LOGGER.info(
+                            "%s: the door moved on the repeated %s over %s",
+                            self._door_alias, action, transport,
+                        )
+                    return True
+                _LOGGER.warning(
+                    "%s: the opener accepted the %s command over %s but the door "
+                    "did not move within %.0fs (attempt %d of %d)",
+                    self._door_alias, action, transport, window,
+                    sent, MOVE_CONFIRM_ATTEMPTS,
+                )
+            if delivered:
+                self._unmoved.append(transport)
+            return False
+
+        return attempt
+
+    async def _wait_for_motion(
+        self, start: int, sent_at: float, direction: int
+    ) -> float | None:
+        """Wait for the door to move; None if it did, else the seconds waited.
+
+        The BLE link reports the door's direction within milliseconds of the
+        ack, so it is given far less time than MQTT, whose reports lag.
+        """
+        window = (
+            MOVE_CONFIRM_TIMEOUT_LOCAL if self._ble_link_up() else MOVE_CONFIRM_TIMEOUT
+        )
+        deadline = sent_at + window
+        while self.hass.loop.time() < deadline:
+            if self._moved_since(start, sent_at, direction):
+                return None
+            await asyncio.sleep(0.1)
+        return window
+
+    def _expects_motion(self, start: int | None, direction: int) -> bool:
+        """Whether the door should visibly move, and something would show it.
+
+        Not when it is already at the end it was sent to, nor when its position
+        is unknown; and only with a live state source (the BLE link or MQTT),
+        since without one a door that did move would look like it hadn't.
+        """
+        if start is None:
+            return False
+        if direction > 0 and start >= DOOR_STATE_OPEN:
+            return False
+        if direction < 0 and start <= DOOR_STATE_CLOSED:
+            return False
+        return self._ble_link_up() or self.mqtt.is_connected
+
+    def _moved_since(self, start: int, sent_at: float, direction: int) -> bool:
+        """Whether a report since ``sent_at`` shows the door moving ``direction``.
+
+        The direction attribute leads the position, so it confirms first; a
+        position that has moved the right way confirms too, for firmware that
+        doesn't report direction.
+        """
+        pos = self.door_position
+        if pos is not None and (pos - start) * direction > 0:
+            return True
+        return self.motion_updated_at > sent_at and self.door_motion == direction
 
     async def _send_via(self, ble: _Send, cloud: _Send) -> bool:
         """Run one action over the transports the connection mode allows.
@@ -1196,6 +1319,7 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         Home Assistant obeys the mode exactly like opening the door does.
         """
         self._last_command_error = None
+        self._unmoved = []
         ble = self._recording(ble, TRANSPORT_BLE)
         cloud = self._recording(cloud, TRANSPORT_CLOUD)
 
@@ -1232,7 +1356,10 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
 
         # The cloud refuses while the door is off WiFi, but the opener is still
         # there over BLE — a connect started above is often seconds from ready,
-        # so let local control have the last word.
+        # so let local control have the last word. Not when BLE already got
+        # through and the door ignored it: sending it again won't change that.
+        if TRANSPORT_BLE in self._unmoved:
+            return False
         _LOGGER.debug("Cloud command failed; waiting for BLE to retry locally")
         if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
             if await ble():
@@ -1268,11 +1395,16 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         if await ble():
             _LOGGER.debug("BLE command confirmed (ack)")
             return True
+        if self._unmoved:
+            # It got through and the door ignored it; that is the error.
+            return False
 
         if await self._async_wait_for_ble(BLE_COMMAND_CONNECT_WAIT):
             if await ble():
                 _LOGGER.debug("BLE command confirmed (ack) after waiting for connect")
                 return True
+            if self._unmoved:
+                return False
 
         self._last_command_error = (
             "the opener did not answer over Bluetooth, and the connection mode "
@@ -1287,9 +1419,12 @@ class FlinxGarageCoordinator(DataUpdateCoordinator):
         Returning False here would let Home Assistant report the action as
         successful while the door never moved.
         """
-        detail = self._last_command_error or (
-            "Bluetooth was unavailable and the cloud API could not be reached"
-        )
+        detail = self._last_command_error
+        if self._unmoved:
+            via = " and ".join(_TRANSPORT_NAMES[t] for t in self._unmoved)
+            ignored = f"the opener accepted the command over {via} but the door did not move"
+            detail = f"{ignored}, then {detail}" if detail else ignored
+        detail = detail or "Bluetooth was unavailable and the cloud API could not be reached"
         return HomeAssistantError(f"Could not {action}: {detail}")
 
     @callback
