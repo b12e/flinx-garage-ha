@@ -89,6 +89,7 @@ One integration entry covers one F-LinX account and all of its connected garage 
 
 By default, commands are sent via Bluetooth first, falling back to the cloud API automatically when Bluetooth is unavailable. State arrives over MQTT push from the cloud, plus the opener's own position stream while the Bluetooth link is up.
 
+<!-- ha-marketplace:exclude-start -->
 ## Installation
 
 ### Home Assistant Marketplace (formerly HACS)
@@ -104,11 +105,12 @@ By default, commands are sent via Bluetooth first, falling back to the cloud API
 1. Go to **Settings → Devices & Services → Add Integration → F-LinX Garage Door**
 2. Enter your F-LinX account credentials
 3. Select which doors to add (all doors on your account are pre-selected)
+<!-- ha-marketplace:exclude-end -->
 
 ### Requirements
 
 - Home Assistant **2025.2.0** or newer
-- A Bluetooth adapter on your HA host (for local commands), or an [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy.html) in range of your garage door
+- A Bluetooth adapter connected to your HA host (for local commands), or an [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy.html) in range of your garage door
 - A garage door that works with the F-LinX app - either directly or via the USB dongle ([F-LinX / Force-Door garage door controller](https://www.myforcedoor.com/prodetails/49/546.html)) (connected to WiFi for cloud control)
 
 ## Connection modes
